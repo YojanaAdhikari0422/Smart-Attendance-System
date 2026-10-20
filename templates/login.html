@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block public_content %}
+<main class="login-page">
+  <section class="login-card">
+    <a class="brand login-brand" href="{{ url_for('auth.login') }}">
+      <span class="brand-mark">SA</span>
+      <span class="brand-copy"><strong>{{ config.APP_TITLE }}</strong><small>ATTENDANCE CONSOLE</small></span>
+    </a>
+    <div class="login-heading">
+      <p class="eyebrow">ADMINISTRATOR ACCESS</p>
+      <h1>Welcome back</h1>
+      <p>Sign in to manage people and attendance.</p>
+    </div>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}<div class="flash flash-{{ category }}">{{ message }}</div>{% endfor %}
+      {% endif %}
+    {% endwith %}
+    <form method="post" class="form-stack">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <label>Username<input name="username" autocomplete="username" required autofocus maxlength="120"></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button class="button button-primary button-full" type="submit">Sign in</button>
+    </form>
+    <p class="login-footnote">Authorized administrators only. Sessions use secure, HTTP-only cookies.</p>
+  </section>
+  <div class="login-aside">
+    <div class="login-orbit orbit-a"></div><div class="login-orbit orbit-b"></div>
+    <div class="login-illustration"><span>✓</span></div>
+    <p class="login-aside-title">A clearer picture of attendance.</p>
+    <p class="login-aside-copy">Manage check-ins, people, insights, and exports in one workspace.</p>
+    <p class="privacy-note">Camera access starts only after you choose to open live attendance or enroll a person.</p>
+  </div>
+</main>
+{% endblock %}

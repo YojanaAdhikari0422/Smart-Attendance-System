@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading">
+  <div><p class="eyebrow">YOUR WORKSPACE</p><h1>Good day, {{ session.get('admin', 'Admin') }}.</h1><p>Here is today's attendance at a glance.</p></div>
+  <a class="button button-primary" href="{{ url_for('main.live') }}"><span>◉</span> Start attendance</a>
+</section>
+<section class="metric-grid" aria-label="Attendance summary">
+  <article class="metric-card"><div class="metric-top"><span class="metric-icon icon-blue">◎</span><span class="metric-label">REGISTERED PEOPLE</span></div><strong>{{ total_people }}</strong><small>Active people in your directory</small></article>
+  <article class="metric-card"><div class="metric-top"><span class="metric-icon icon-green">✓</span><span class="metric-label">PRESENT TODAY</span></div><strong>{{ present_today }}</strong><small>{{ today.strftime('%A, %B') }} {{ today.day }}</small></article>
+  <article class="metric-card"><div class="metric-top"><span class="metric-icon icon-violet">↗</span><span class="metric-label">TODAY'S ATTENDANCE</span></div><strong>{{ attendance_rate }}<span class="metric-unit">%</span></strong><small>Of registered people checked in</small></article>
+</section>
+<section class="panel recent-panel">
+  <div class="panel-heading"><div><h2>Recent check-ins</h2><p>Latest attendance activity across your workspace.</p></div><a class="text-link" href="{{ url_for('main.analytics') }}">View analytics <span>→</span></a></div>
+  {% if recent %}
+  <div class="table-scroll"><table><thead><tr><th>PERSON</th><th>STUDENT ID</th><th>DATE</th><th>FIRST SEEN</th><th>LAST SEEN</th><th>STATUS</th></tr></thead><tbody>
+    {% for record in recent %}<tr><td><span class="person-cell"><span class="person-avatar">{{ record.user.name[:1]|upper if record.user else '?' }}</span><strong>{{ record.user.name if record.user else 'Unknown' }}</strong></span></td><td>{{ record.student_id }}</td><td>{{ record.attendance_date.isoformat() }}</td><td>{{ record.first_seen_text }}</td><td>{{ record.last_seen_text }}</td><td><span class="status-pill"><span></span>Present</span></td></tr>{% endfor %}
+  </tbody></table></div>
+  {% else %}
+  <div class="empty-state"><span class="empty-icon">◷</span><h3>No check-ins yet</h3><p>Start a live attendance session to see check-ins here.</p><a class="button button-secondary" href="{{ url_for('main.live') }}">Open live attendance</a></div>
+  {% endif %}
+</section>
+<section class="callout callout-info"><span class="callout-icon">i</span><p><strong>Camera privacy:</strong> browser camera frames are sent securely for processing and discarded after each request. Only face descriptors and attendance records are stored.</p></section>
+{% endblock %}

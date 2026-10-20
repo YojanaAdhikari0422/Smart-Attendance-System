@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="page-heading">
+  <div><p class="eyebrow">EXPORT CENTER</p><h1>Attendance reports</h1><p>Review and download an Excel report for a date range.</p></div>
+  <a class="button button-primary {{ 'is-disabled' if not rows }}" href="{{ url_for('main.export_report', start=start.isoformat(), end=end.isoformat()) }}" {% if not rows %}aria-disabled="true"{% endif %}>↓ Download Excel</a>
+</section>
+<form class="date-filter panel" method="get">
+  <label>From<input type="date" name="start" value="{{ start.isoformat() }}" required></label>
+  <label>Through<input type="date" name="end" value="{{ end.isoformat() }}" required></label>
+  <button class="button button-primary" type="submit">Preview report</button>
+  <span class="date-range-note">Dates are inclusive · {{ rows|length }} record(s)</span>
+</form>
+<section class="panel">
+  <div class="panel-heading"><div><h2>Report preview</h2><p>{{ start.isoformat() }} through {{ end.isoformat() }}</p></div><span class="count-badge">{{ rows|length }} records</span></div>
+  {% if rows %}<div class="table-scroll"><table><thead><tr><th>STUDENT ID</th><th>NAME</th><th>DATE</th><th>FIRST SEEN</th><th>LAST SEEN</th></tr></thead><tbody>
+    {% for record in rows %}<tr><td>{{ record.student_id }}</td><td>{{ record.user.name if record.user else 'Unknown' }}</td><td>{{ record.attendance_date.isoformat() }}</td><td>{{ record.first_seen_text }}</td><td>{{ record.last_seen_text }}</td></tr>{% endfor %}
+  </tbody></table></div>{% else %}<div class="empty-state"><span class="empty-icon">↗</span><h3>No records to export</h3><p>Choose another date range or start recording attendance.</p></div>{% endif %}
+</section>
+{% endblock %}

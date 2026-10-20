@@ -1,0 +1,36 @@
+# Local Python environments and generated files
+/attendance/
+/venv/
+/.venv/
+/env/
+/instance/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Local biometric and attendance data
+Attendance_records/
+*.db
+*.sqlite
+*.sqlite3
+*.xlsx
+*.xls
+*.jpg
+*.jpeg
+*.png
+
+# Local runtime/debug output
+process.txt
+*.log

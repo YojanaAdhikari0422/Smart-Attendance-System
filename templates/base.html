@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token() }}">
+  <meta name="theme-color" content="#f4f6fa">
+  <title>{{ page_title }} | {{ config.APP_TITLE }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  {% if session.get('authenticated') %}
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="{{ url_for('main.dashboard') }}">
+        <span class="brand-mark">SA</span>
+        <span class="brand-copy"><strong>{{ config.APP_TITLE }}</strong><small>ATTENDANCE CONSOLE</small></span>
+      </a>
+      <p class="nav-label">WORKSPACE</p>
+      <nav class="nav-links" aria-label="Main navigation">
+        <a class="{{ 'active' if active_page == 'overview' }}" href="{{ url_for('main.dashboard') }}"><span class="nav-icon">◫</span>Overview</a>
+        <a class="{{ 'active' if active_page == 'live' }}" href="{{ url_for('main.live') }}"><span class="nav-icon">◉</span>Live attendance</a>
+        <a class="{{ 'active' if active_page == 'people' }}" href="{{ url_for('main.people') }}"><span class="nav-icon">◎</span>People</a>
+        <a class="{{ 'active' if active_page == 'analytics' }}" href="{{ url_for('main.analytics') }}"><span class="nav-icon">▥</span>Analytics</a>
+        <a class="{{ 'active' if active_page == 'reports' }}" href="{{ url_for('main.reports') }}"><span class="nav-icon">↗</span>Reports</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span class="secure-indicator"><span></span> Secure session</span>
+        <small>Camera turns on only when you start it.</small>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div class="breadcrumb">Workspace <span>/</span> <strong>{{ page_title }}</strong></div>
+        <div class="topbar-actions">
+          <span class="user-chip"><span class="avatar">{{ session.get('admin', 'A')[:1]|upper }}</span><span>{{ session.get('admin', 'Admin') }}</span></span>
+          <form action="{{ url_for('auth.logout') }}" method="post">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button button-quiet button-small" type="submit">Sign out</button>
+          </form>
+        </div>
+      </header>
+      <main class="main-content">
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <div class="flash-stack" aria-live="polite">
+              {% for category, message in messages %}
+                <div class="flash flash-{{ category }}">{{ message }}</div>
+              {% endfor %}
+            </div>
+          {% endif %}
+        {% endwith %}
+        {% block content %}{% endblock %}
+      </main>
+      <footer class="app-footer"><span>Smart Attendance</span><span>Camera frames are processed transiently and are not saved.</span></footer>
+    </div>
+  </div>
+  {% else %}
+    {% block public_content %}{% endblock %}
+  {% endif %}
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</body>
+</html>

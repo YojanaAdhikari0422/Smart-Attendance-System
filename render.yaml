@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: smart-attendance
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: pip install -r requirements.txt
+    startCommand: flask --app web_app:app db upgrade && gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 web_app:app
+    healthCheckPath: /health
+    envVars:
+      - key: APP_TITLE
+        value: Smart Attendance
+      - key: SECRET_KEY
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: smart-attendance-db
+          property: connectionString
+      - key: WEB_ADMIN_USERNAME
+        sync: false
+      - key: WEB_ADMIN_PASSWORD
+        sync: false
+
+databases:
+  - name: smart-attendance-db
+    databaseName: smart_attendance
+    user: smart_attendance
+    plan: free
+    region: oregon
