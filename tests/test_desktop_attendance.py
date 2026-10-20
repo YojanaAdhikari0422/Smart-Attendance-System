@@ -143,7 +143,15 @@ class DesktopAttendanceTests(unittest.TestCase):
         try:
             button_labels = {button.text() for button in window.findChildren(APP.QPushButton)}
             self.assertIn("Add new student", button_labels)
-            self.assertIn("Take attendance", button_labels)
+            self.assertNotIn("Take attendance", button_labels)
+            self.assertEqual(
+                [
+                    window.sidebar.item(index).text()
+                    for index in range(window.sidebar.count())
+                ].count("Take attendance"),
+                1,
+            )
+            self.assertIn("Start Camera", button_labels)
             self.assertEqual(window.registration_widget.class_input.placeholderText(), "e.g. MCA or MBA")
             live = window.live_widget
             live.on_unmatched_attempts_changed(3)

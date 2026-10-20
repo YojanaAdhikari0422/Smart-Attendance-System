@@ -291,11 +291,6 @@ def get_eye_landmarks(frame_bgr):
 # FACE UTILITIES
 # ======================================================================================
 
-def detect_faces(frame_bgr):
-    """Return YuNet detections containing boxes, landmarks, and confidence scores."""
-    return get_face_recognizer().detect(frame_bgr)
-
-
 def find_best_match(embedding, known_embeddings):
     """Match a normalized SFace feature against each student's multiple view templates."""
     if embedding is None or not known_embeddings:
@@ -1910,12 +1905,6 @@ class MainWindow(QMainWindow):
         add_user_btn.clicked.connect(self.add_new_user)
         top_bar_layout.addWidget(add_user_btn)
 
-        attendance_btn = QPushButton("Take attendance")
-        attendance_btn.setObjectName("primaryButton")
-        attendance_btn.setToolTip("Open the live attendance camera")
-        attendance_btn.clicked.connect(self.start_attendance)
-        top_bar_layout.addWidget(attendance_btn)
-
         user_badge = QLabel("ADMIN  ·  admin")
         user_badge.setStyleSheet(
             "background: #eef2f8; color: #43536c; border-radius: 8px; padding: 8px 10px; font-weight: 700;"
@@ -1956,11 +1945,6 @@ class MainWindow(QMainWindow):
         self.live_widget.stop_camera()
         self.sidebar.setCurrentRow(1)
         self.registration_widget.start_capture()
-
-    def start_attendance(self):
-        self.registration_widget.stop_capture()
-        self.sidebar.setCurrentRow(0)
-        self.live_widget.start_camera()
 
     def on_users_changed(self):
         """Keep a running camera thread's in-RAM embeddings in sync after CRUD changes."""
