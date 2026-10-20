@@ -133,6 +133,92 @@ class DesktopAttendanceTests(unittest.TestCase):
         finally:
             database.conn.close()
 
+    def test_liveness_requires_one_blink_followed_by_a_stable_head_turn(self):
+        database = APP.Database(str(self.temp_path / "liveness.sqlite3"))
+        worker = APP.CameraThread(database)
+        try:
+            for _ in range(7):
+                blinks, turned = worker._update_liveness(200, 200, 0.30, 0.0)
+            self.assertEqual(blinks, 0)
+            self.assertFalse(turned)
+
+            for _ in range(5):
+                blinks, turned = worker._update_liveness(200, 200, 0.10, 0.0)
+            self.assertEqual(blinks, 0)
+            self.assertFalse(turned)
+
+            for _ in range(7):
+                blinks, turned = worker._update_liveness(200, 200, 0.30, 0.0)
+            self.assertEqual(blinks, 1)
+            self.assertFalse(turned)
+
+            for _ in range(APP.MIN_TURN_FRAMES + APP.YAW_SMOOTHING_WINDOW):
+                blinks, turned = worker._update_liveness(200, 200, 0.30, 0.15)
+            self.assertEqual(blinks, 1)
+            self.assertTrue(turned)
+        finally:
+            database.conn.close()
+
+    def test_camera_startup_falls_back_to_backend_that_returns_a_frame(self):
+        database = APP.Database(str(self.temp_path / "camera.sqlite3"))
+        worker = APP.CameraThread(database)
+        first_capture = type(
+            "FakeCapture",
+            (),
+            {
+                "isOpened": lambda self: False,
+                "release": lambda self: setattr(self, "released", True),
+            },
+        )()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        working_capture = type(
+            "FakeCapture",
+            (),
+            {
+                "isOpened": lambda self: True,
+                "read": lambda self: (True, frame),
+                "release": lambda self: setattr(self, "released", True),
+            },
+        )()
+        captures = [first_capture, working_capture]
+        backend_calls = []
+
+        def fake_video_capture(camera_index, backend):
+            backend_calls.append((camera_index, backend))
+            return captures[len(backend_calls) - 1]
+
+        try:
+            with patch.object(APP.cv2, "VideoCapture", side_effect=fake_video_capture):
+                capture, first_frame, error = worker._open_camera()
+
+            self.assertIs(capture, working_capture)
+            self.assertIs(first_frame, frame)
+            self.assertIsNone(error)
+            self.assertTrue(first_capture.released)
+            self.assertEqual(
+                backend_calls,
+                [(0, APP.cv2.CAP_DSHOW), (0, APP.cv2.CAP_ANY)],
+            )
+        finally:
+            working_capture.release()
+            database.conn.close()
+
+    def test_black_camera_frames_are_detected_and_not_mistaken_for_video(self):
+        black_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        almost_black_frame = black_frame.copy()
+        almost_black_frame[0, 0] = (255, 255, 255)
+        visible_frame = np.full((480, 640, 3), 64, dtype=np.uint8)
+
+        self.assertTrue(APP.CameraThread._is_black_frame(black_frame))
+        self.assertTrue(APP.CameraThread._is_black_frame(almost_black_frame))
+        self.assertFalse(APP.CameraThread._is_black_frame(visible_frame))
+
+        warned_frame = APP.CameraThread._draw_camera_warning(
+            black_frame.copy(),
+            "Camera image is black.",
+        )
+        self.assertFalse(APP.CameraThread._is_black_frame(warned_frame))
+
     def test_desktop_ui_exposes_student_and_attendance_actions(self):
         database = APP.Database(str(self.temp_path / "ui.sqlite3"))
         template = np.zeros((1, APP.SFACE_EMBEDDING_SIZE), dtype=np.float32)
@@ -153,6 +239,19 @@ class DesktopAttendanceTests(unittest.TestCase):
             )
             self.assertIn("Start Camera", button_labels)
             self.assertEqual(window.registration_widget.class_input.placeholderText(), "e.g. MCA or MBA")
+            window.sidebar.setCurrentRow(1)
+            self.assertIs(
+                window.registration_widget.page_stack.currentWidget(),
+                window.registration_widget.directory_page,
+            )
+            self.assertEqual(window.registration_widget.table.rowCount(), 1)
+            window.add_user_btn.click()
+            self.assertIs(
+                window.registration_widget.page_stack.currentWidget(),
+                window.registration_widget.form_page,
+            )
+            self.assertIsNone(window.registration_widget.capture_cap)
+            self.assertEqual(window.registration_widget.form_header.text(), "Add a new student")
             live = window.live_widget
             live.on_unmatched_attempts_changed(3)
             self.assertTrue(live.manual_attendance_btn.isEnabled())
@@ -165,6 +264,10 @@ class DesktopAttendanceTests(unittest.TestCase):
             self.assertEqual(
                 database.get_attendance(APP.date.today().isoformat(), APP.date.today().isoformat())[0][:3],
                 ("R-101", "Avery Student", "MCA"),
+            )
+            self.assertEqual(
+                live.confirmation_label.text(),
+                "Avery Student's attendance taken. Next student may come forward.",
             )
         finally:
             window.close()
@@ -205,6 +308,40 @@ class DesktopAttendanceTests(unittest.TestCase):
             )
         finally:
             workbook.close()
+
+    def test_export_date_calendars_filter_single_day_or_date_range(self):
+        database = APP.Database(str(self.temp_path / "export.sqlite3"))
+        template = np.zeros((1, APP.SFACE_EMBEDDING_SIZE), dtype=np.float32)
+        template[0, 0] = 1.0
+        database.add_user("R-101", "Avery Student", "MCA", template)
+        with database.lock:
+            database.conn.executemany(
+                "INSERT INTO attendance (student_id, date, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    ("R-101", "2026-10-19", "09:00:00", "09:00:00"),
+                    ("R-101", "2026-10-20", "09:00:00", "09:00:00"),
+                    ("R-101", "2026-10-21", "09:00:00", "09:00:00"),
+                ],
+            )
+            database.conn.commit()
+
+        widget = APP.ExportWidget(database)
+        try:
+            self.assertTrue(widget.start_date_input.calendarPopup())
+            self.assertTrue(widget.end_date_input.calendarPopup())
+
+            widget.end_date_input.setDate(APP.QDate(2026, 10, 21))
+            widget.start_date_input.setDate(APP.QDate(2026, 10, 19))
+            self.assertEqual(widget._get_date_range(), ("2026-10-19", "2026-10-21"))
+            self.assertEqual(widget.record_count_label.text(), "3")
+
+            widget.start_date_input.setDate(APP.QDate(2026, 10, 20))
+            widget.end_date_input.setDate(APP.QDate(2026, 10, 20))
+            self.assertEqual(widget._get_date_range(), ("2026-10-20", "2026-10-20"))
+            self.assertEqual(widget.record_count_label.text(), "1")
+        finally:
+            database.conn.close()
 
 
 if __name__ == "__main__":
