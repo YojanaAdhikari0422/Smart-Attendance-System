@@ -15,7 +15,7 @@ Architecture
                            blink twice before it can be matched and marked present.
 - RegistrationWidget     : Module 2 - capture faces, compute mean embedding, full user CRUD.
 - AnalyticsWidget        : Module 3 - attendance log table + per-student presence chart.
-- ExportWidget           : Module 4 - export attendance to .xlsx filtered by week/month/year.
+- ExportWidget           : Module 4 - export attendance to .xlsx for a selected date or range.
 
 Run with:
     conda activate attendance
@@ -34,7 +34,7 @@ import os
 import sqlite3
 import threading
 import tempfile
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -42,13 +42,13 @@ from dotenv import load_dotenv
 import numpy as np
 import cv2
 
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QDate, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QImage, QPixmap, QFont
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QFormLayout, QListWidget, QListWidgetItem,
     QStackedWidget, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QGroupBox, QComboBox, QFileDialog, QFrame, QAbstractItemView, QInputDialog
+    QGroupBox, QDateEdit, QFileDialog, QFrame, QAbstractItemView, QInputDialog
 )
 from face_models import (
     MODEL_DIRECTORY,
@@ -123,7 +123,7 @@ QPushButton#primaryButton:hover {
 QPushButton#dangerButton {
     color: #b42332;
 }
-QLineEdit, QComboBox {
+QLineEdit, QComboBox, QDateEdit {
     background: #ffffff;
     border: 1px solid #d9e0eb;
     border-radius: 7px;
@@ -131,7 +131,7 @@ QLineEdit, QComboBox {
     min-height: 20px;
     selection-background-color: #315fce;
 }
-QLineEdit:focus, QComboBox:focus {
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus {
     border: 1px solid #5785e6;
 }
 QGroupBox {
@@ -1764,9 +1764,17 @@ class ExportWidget(QWidget):
         )
         subtitle.setObjectName("pageSubtitle")
 
-        self.range_combo = QComboBox()
-        self.range_combo.addItems(["Weekly (last 7 days)", "Monthly (current month)", "Yearly (current year)"])
-        self.range_combo.currentIndexChanged.connect(self.update_summary)
+        self.start_date_input = QDateEdit(QDate.currentDate())
+        self.start_date_input.setCalendarPopup(True)
+        self.start_date_input.setDisplayFormat("dd MMM yyyy")
+        self.start_date_input.setObjectName("startDateInput")
+        self.start_date_input.dateChanged.connect(self._on_start_date_changed)
+
+        self.end_date_input = QDateEdit(QDate.currentDate())
+        self.end_date_input.setCalendarPopup(True)
+        self.end_date_input.setDisplayFormat("dd MMM yyyy")
+        self.end_date_input.setObjectName("endDateInput")
+        self.end_date_input.dateChanged.connect(self._on_end_date_changed)
 
         self.export_btn = QPushButton("Export to Excel")
         self.export_btn.setObjectName("primaryButton")
@@ -1774,7 +1782,8 @@ class ExportWidget(QWidget):
 
         form = QFormLayout()
         form.setVerticalSpacing(12)
-        form.addRow("Reporting period", self.range_combo)
+        form.addRow("From date", self.start_date_input)
+        form.addRow("To date", self.end_date_input)
 
         summary_box = QGroupBox("Report preview")
         summary_layout = QVBoxLayout()
@@ -1789,7 +1798,7 @@ class ExportWidget(QWidget):
         summary_layout.addWidget(records_caption)
         summary_box.setLayout(summary_layout)
 
-        self.status_label = QLabel("Choose a reporting period to preview the records.")
+        self.status_label = QLabel("Choose a date or date range to preview the records.")
         self.status_label.setObjectName("mutedLabel")
         self.status_label.setWordWrap(True)
 
@@ -1812,18 +1821,20 @@ class ExportWidget(QWidget):
         self.update_summary()
 
     def _get_date_range(self):
-        today = date.today()
-        choice = self.range_combo.currentText()
-        if choice.startswith("Weekly"):
-            start = today - timedelta(days=7)
-            end = today
-        elif choice.startswith("Monthly"):
-            start = today.replace(day=1)
-            end = today
-        else:  # Yearly
-            start = today.replace(month=1, day=1)
-            end = today
-        return start.isoformat(), end.isoformat()
+        return (
+            self.start_date_input.date().toPyDate().isoformat(),
+            self.end_date_input.date().toPyDate().isoformat(),
+        )
+
+    def _on_start_date_changed(self, selected_date):
+        if selected_date > self.end_date_input.date():
+            self.end_date_input.setDate(selected_date)
+        self.update_summary()
+
+    def _on_end_date_changed(self, selected_date):
+        if selected_date < self.start_date_input.date():
+            self.start_date_input.setDate(selected_date)
+        self.update_summary()
 
     def export_excel(self):
         try:

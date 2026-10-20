@@ -219,6 +219,40 @@ class DesktopAttendanceTests(unittest.TestCase):
         finally:
             workbook.close()
 
+    def test_export_date_calendars_filter_single_day_or_date_range(self):
+        database = APP.Database(str(self.temp_path / "export.sqlite3"))
+        template = np.zeros((1, APP.SFACE_EMBEDDING_SIZE), dtype=np.float32)
+        template[0, 0] = 1.0
+        database.add_user("R-101", "Avery Student", "MCA", template)
+        with database.lock:
+            database.conn.executemany(
+                "INSERT INTO attendance (student_id, date, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?)",
+                [
+                    ("R-101", "2026-10-19", "09:00:00", "09:00:00"),
+                    ("R-101", "2026-10-20", "09:00:00", "09:00:00"),
+                    ("R-101", "2026-10-21", "09:00:00", "09:00:00"),
+                ],
+            )
+            database.conn.commit()
+
+        widget = APP.ExportWidget(database)
+        try:
+            self.assertTrue(widget.start_date_input.calendarPopup())
+            self.assertTrue(widget.end_date_input.calendarPopup())
+
+            widget.end_date_input.setDate(APP.QDate(2026, 10, 21))
+            widget.start_date_input.setDate(APP.QDate(2026, 10, 19))
+            self.assertEqual(widget._get_date_range(), ("2026-10-19", "2026-10-21"))
+            self.assertEqual(widget.record_count_label.text(), "3")
+
+            widget.start_date_input.setDate(APP.QDate(2026, 10, 20))
+            widget.end_date_input.setDate(APP.QDate(2026, 10, 20))
+            self.assertEqual(widget._get_date_range(), ("2026-10-20", "2026-10-20"))
+            self.assertEqual(widget.record_count_label.text(), "1")
+        finally:
+            database.conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
