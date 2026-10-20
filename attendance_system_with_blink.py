@@ -1162,10 +1162,10 @@ class RegistrationWidget(QWidget):
         self.face_recognizer = None
         self.editing_student_id = None
 
-        header = QLabel("Students")
-        header.setObjectName("pageTitle")
-        subtitle = QLabel("Enroll faces, maintain your directory, and keep recognition data current.")
-        subtitle.setObjectName("pageSubtitle")
+        directory_header = QLabel("Students")
+        directory_header.setObjectName("pageTitle")
+        directory_subtitle = QLabel("View and manage students enrolled in the system.")
+        directory_subtitle.setObjectName("pageSubtitle")
 
         # ---- Registration form ----
         self.name_input = QLineEdit()
@@ -1221,7 +1221,7 @@ class RegistrationWidget(QWidget):
         upload_row.addWidget(self.upload_photos_btn)
         upload_row.addWidget(self.photo_status_label, 1)
 
-        form_box = QGroupBox("Add a new student")
+        self.form_box = QGroupBox("Add a new student")
         form_layout = QVBoxLayout()
         form_layout.addLayout(form)
         form_layout.addWidget(self.preview_label)
@@ -1232,8 +1232,8 @@ class RegistrationWidget(QWidget):
         row2.addWidget(self.save_btn)
         row2.addWidget(self.clear_form_btn)
         form_layout.addLayout(row2)
-        form_box.setLayout(form_layout)
-        form_box.setMinimumWidth(430)
+        self.form_box.setLayout(form_layout)
+        self.form_box.setMinimumWidth(430)
 
         # ---- CRUD table ----
         self.table = QTableWidget(0, 5)
@@ -1262,19 +1262,61 @@ class RegistrationWidget(QWidget):
         table_layout.addWidget(self.table)
         table_box.setLayout(table_layout)
 
-        body = QHBoxLayout()
-        body.addWidget(form_box, 1)
-        body.addWidget(table_box, 1)
+        self.directory_page = QWidget()
+        directory_layout = QVBoxLayout()
+        directory_layout.setContentsMargins(28, 24, 28, 24)
+        directory_layout.setSpacing(14)
+        directory_layout.addWidget(directory_header)
+        directory_layout.addWidget(directory_subtitle)
+        directory_layout.addWidget(table_box, 1)
+        self.directory_page.setLayout(directory_layout)
 
-        layout = QVBoxLayout()
-        layout.setContentsMargins(28, 24, 28, 24)
-        layout.setSpacing(14)
-        layout.addWidget(header)
-        layout.addWidget(subtitle)
-        layout.addLayout(body)
-        self.setLayout(layout)
+        self.form_page = QWidget()
+        self.form_header = QLabel("Add a new student")
+        self.form_header.setObjectName("pageTitle")
+        form_subtitle = QLabel(
+            "Enter student details, then capture a face or upload four photos."
+        )
+        form_subtitle.setObjectName("pageSubtitle")
+        self.back_to_directory_btn = QPushButton("Back to students")
+        self.back_to_directory_btn.clicked.connect(self.cancel_form)
+        form_title_row = QHBoxLayout()
+        form_title_row.addWidget(self.form_header)
+        form_title_row.addStretch()
+        form_title_row.addWidget(self.back_to_directory_btn)
+        form_body = QHBoxLayout()
+        form_body.addStretch()
+        form_body.addWidget(self.form_box)
+        form_body.addStretch()
+        form_page_layout = QVBoxLayout()
+        form_page_layout.setContentsMargins(28, 24, 28, 24)
+        form_page_layout.setSpacing(14)
+        form_page_layout.addLayout(form_title_row)
+        form_page_layout.addWidget(form_subtitle)
+        form_page_layout.addLayout(form_body, 1)
+        self.form_page.setLayout(form_page_layout)
+
+        self.page_stack = QStackedWidget()
+        self.page_stack.addWidget(self.directory_page)
+        self.page_stack.addWidget(self.form_page)
+        widget_layout = QVBoxLayout()
+        widget_layout.setContentsMargins(0, 0, 0, 0)
+        widget_layout.addWidget(self.page_stack)
+        self.setLayout(widget_layout)
 
         self.refresh_table()
+
+    def show_directory(self):
+        self.stop_capture()
+        self.page_stack.setCurrentWidget(self.directory_page)
+
+    def show_add_form(self):
+        self.clear_form()
+        self.page_stack.setCurrentWidget(self.form_page)
+
+    def cancel_form(self):
+        self.clear_form()
+        self.show_directory()
 
     # ---------------- capture flow ----------------
 
@@ -1462,6 +1504,7 @@ class RegistrationWidget(QWidget):
         )
         self.clear_form()
         self.refresh_table()
+        self.show_directory()
         if self.on_users_changed:
             self.on_users_changed()
 
@@ -1471,6 +1514,8 @@ class RegistrationWidget(QWidget):
         self.id_input.setEnabled(False)
         self.name_input.setText(name)
         self.class_input.setText(class_name)
+        self.form_header.setText("Edit student")
+        self.form_box.setTitle("Edit student")
         self.captured_embeddings = []
         self.uploaded_photo_paths = []
         if face_model == "opencv_sface":
@@ -1484,6 +1529,7 @@ class RegistrationWidget(QWidget):
         self.photo_status_label.setText("Or upload four front/side/up/down face photos.")
         self.save_btn.setText("Update person")
         self.save_btn.setEnabled(True)
+        self.page_stack.setCurrentWidget(self.form_page)
 
     def delete_person(self, student_id, name):
         confirm = QMessageBox.question(
@@ -1509,6 +1555,8 @@ class RegistrationWidget(QWidget):
         self.id_input.setEnabled(True)
         self.captured_embeddings = []
         self.save_btn.setText("Save student")
+        self.form_header.setText("Add a new student")
+        self.form_box.setTitle("Add a new student")
         self.capture_progress_label.setText(f"Captured 0 / {CAPTURE_COUNT} frames")
         self.photo_status_label.setText("Or upload four front/side/up/down face photos.")
         self.save_btn.setEnabled(False)
@@ -1900,10 +1948,10 @@ class MainWindow(QMainWindow):
         top_bar_layout.addWidget(app_title)
         top_bar_layout.addStretch()
 
-        add_user_btn = QPushButton("Add new student")
-        add_user_btn.setToolTip("Add a student with name, roll number, class, and face capture")
-        add_user_btn.clicked.connect(self.add_new_user)
-        top_bar_layout.addWidget(add_user_btn)
+        self.add_user_btn = QPushButton("Add new student")
+        self.add_user_btn.setToolTip("Open the form to enroll a new student")
+        self.add_user_btn.clicked.connect(self.add_new_user)
+        top_bar_layout.addWidget(self.add_user_btn)
 
         user_badge = QLabel("ADMIN  ·  admin")
         user_badge.setStyleSheet(
@@ -1934,9 +1982,12 @@ class MainWindow(QMainWindow):
 
     def switch_page(self, index):
         self.stack.setCurrentIndex(index)
+        if index != 1:
+            self.registration_widget.stop_capture()
         if index == 2:
             self.analytics_widget.refresh_all()
         elif index == 1:
+            self.registration_widget.show_directory()
             self.registration_widget.refresh_table()
         elif index == 3:
             self.export_widget.update_summary()
@@ -1944,7 +1995,7 @@ class MainWindow(QMainWindow):
     def add_new_user(self):
         self.live_widget.stop_camera()
         self.sidebar.setCurrentRow(1)
-        self.registration_widget.start_capture()
+        self.registration_widget.show_add_form()
 
     def on_users_changed(self):
         """Keep a running camera thread's in-RAM embeddings in sync after CRUD changes."""

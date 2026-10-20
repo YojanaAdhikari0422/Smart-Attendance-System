@@ -153,6 +153,19 @@ class DesktopAttendanceTests(unittest.TestCase):
             )
             self.assertIn("Start Camera", button_labels)
             self.assertEqual(window.registration_widget.class_input.placeholderText(), "e.g. MCA or MBA")
+            window.sidebar.setCurrentRow(1)
+            self.assertIs(
+                window.registration_widget.page_stack.currentWidget(),
+                window.registration_widget.directory_page,
+            )
+            self.assertEqual(window.registration_widget.table.rowCount(), 1)
+            window.add_user_btn.click()
+            self.assertIs(
+                window.registration_widget.page_stack.currentWidget(),
+                window.registration_widget.form_page,
+            )
+            self.assertIsNone(window.registration_widget.capture_cap)
+            self.assertEqual(window.registration_widget.form_header.text(), "Add a new student")
             live = window.live_widget
             live.on_unmatched_attempts_changed(3)
             self.assertTrue(live.manual_attendance_btn.isEnabled())
