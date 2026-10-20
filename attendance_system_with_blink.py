@@ -10,9 +10,8 @@ Architecture
 - CameraThread (QThread) : Runs the live camera + recognition loop off the UI thread.
 - Database               : Thin SQLite wrapper (users + attendance tables).
 - LiveRecognitionWidget  : Module 1 - start/stop camera, live overlay, auto attendance marking.
-                           Gated by an OpenCV-driven liveness check (blink detection via
-                           MediaPipe FaceMesh landmarks + Eye Aspect Ratio) - a face must
-                           blink twice before it can be matched and marked present.
+                           Gated by a MediaPipe FaceMesh challenge: blink once, then turn
+                           the head slightly before attendance is recorded.
 - RegistrationWidget     : Module 2 - capture faces, compute mean embedding, full user CRUD.
 - AnalyticsWidget        : Module 3 - attendance log table + per-student presence chart.
 - ExportWidget           : Module 4 - export attendance to .xlsx for a selected date or range.
@@ -23,8 +22,8 @@ Run with:
     python run_attendance.py
 
 Note: MediaPipe (not dlib) powers the liveness landmarks, since dlib requires compiling
-C++ on Windows. If mediapipe isn't installed, the app still runs - it just skips the
-liveness gate and matches faces directly (a status message says so on camera start).
+C++ on Windows. Automatic attendance requires MediaPipe; without it, use the manual
+roll-number fallback after three checks.
 YuNet and SFace provide the desktop face detection and recognition; their pinned model
 files are downloaded and verified by the launcher.
 """
@@ -89,6 +88,15 @@ QLabel#pageTitle {
 QLabel#pageSubtitle {
     color: #71809a;
     font-size: 10pt;
+}
+QLabel#attendanceConfirmation {
+    background: #e9f7ef;
+    border: 1px solid #b6e2c7;
+    border-radius: 8px;
+    color: #17643a;
+    font-size: 11pt;
+    font-weight: 700;
+    padding: 10px;
 }
 QPushButton {
     background: #ffffff;
@@ -215,17 +223,14 @@ def style_table(table):
 
 
 # ======================================================================================
-# LIVENESS DETECTION (OpenCV-driven blink check via MediaPipe FaceMesh landmarks)
+# LIVENESS DETECTION (blink + head-turn challenge via MediaPipe FaceMesh)
 # ======================================================================================
 # MediaPipe is used instead of dlib for landmarks - dlib requires compiling C++ on
 # Windows (CMake/Visual Studio), which is exactly the install pain you hit earlier.
 # MediaPipe installs with a plain `pip install mediapipe`, no compiler needed.
 #
-# The liveness signal itself is a classic OpenCV-style Eye Aspect Ratio (EAR) blink
-# check: a face is only trusted enough to mark attendance once at least one blink has
-# been observed. This stops a printed photo held up to the camera; it will NOT stop a
-# video replay of the same person blinking - that would need a trained anti-spoofing
-# model (see the separate DeepFace-based notebook if you need that stronger guarantee).
+# The challenge requires a blink followed by a deliberate head turn. It is a usability
+# check, not production-grade anti-spoofing: a replay or sophisticated mask may still pass.
 
 try:
     import mediapipe as mp
@@ -249,8 +254,11 @@ EAR_CLOSED_MAX = 0.18     # eyes must clearly read as CLOSED during a blink
                           # single threshold can't flip state back and forth repeatedly)
 MIN_OPEN_FRAMES = 3       # sustained frames needed to confirm "reopened" after closing
 MIN_CLOSED_FRAMES = 2     # sustained frames needed to confirm a real closure
-REQUIRED_BLINKS = 2       # two full open->closed->open cycles needed before trusting a face
+REQUIRED_BLINKS = 1       # one full open->closed->open cycle
 EAR_SMOOTHING_WINDOW = 3  # rolling average size to damp single-frame landmark jitter
+YAW_SMOOTHING_WINDOW = 5
+HEAD_TURN_THRESHOLD = 0.10
+MIN_TURN_FRAMES = 3
 
 
 def eye_aspect_ratio(eye_points):
@@ -263,9 +271,9 @@ def eye_aspect_ratio(eye_points):
 
 def get_eye_landmarks(frame_bgr):
     """
-    Runs MediaPipe FaceMesh on the frame and returns a list of (center_x, center_y, ear)
-    tuples, one per detected face mesh. Returns [] if MediaPipe isn't installed or no
-    face mesh is found, so callers can gracefully skip the liveness gate.
+    Return (center_x, center_y, eye_aspect_ratio, normalized_yaw) per detected face.
+    Normalized yaw compares nose position to the cheek bounds, reducing sensitivity to
+    face size and distance from the camera.
     """
     if not HAS_MEDIAPIPE:
         return []
@@ -283,7 +291,14 @@ def get_eye_landmarks(frame_bgr):
         right_eye = pts[RIGHT_EYE_IDX]
         ear = (eye_aspect_ratio(left_eye) + eye_aspect_ratio(right_eye)) / 2.0
         cx, cy = pts[:, 0].mean(), pts[:, 1].mean()
-        output.append((cx, cy, ear))
+        face_left_x = pts[234, 0]
+        face_right_x = pts[454, 0]
+        face_width = abs(face_right_x - face_left_x)
+        if face_width == 0:
+            continue
+        face_midpoint_x = (face_left_x + face_right_x) / 2.0
+        yaw = (pts[1, 0] - face_midpoint_x) / face_width
+        output.append((cx, cy, ear, yaw))
     return output
 
 
@@ -658,7 +673,10 @@ class CameraThread(QThread):
         self._running = False
         self.known_embeddings = {}
         self._last_marked = {}     # student_id -> last mark_attendance call time (avoid spamming DB every frame)
-        self._blink_trackers = {}  # coarse position key -> {"consec": int, "blinks": int}
+        self._attendance_acknowledged = set()
+        self._liveness_trackers = {}
+        self._face_identity_by_tracker = {}
+        self._black_feed_reported = False
         self.liveness_enabled = HAS_MEDIAPIPE
         self._unmatched_attempts = 0
         self._last_unmatched_attempt = 0
@@ -688,26 +706,35 @@ class CameraThread(QThread):
         # people stand still in front of the camera for a moment.
         return (int(cx) // 40, int(cy) // 40)
 
-    def _update_blink_count(self, cx, cy, raw_ear):
+    def _update_liveness(self, cx, cy, raw_ear, yaw):
         """
-        State-machine blink detector: requires a clean OPEN -> CLOSED -> OPEN cycle,
-        each phase sustained for several frames, with a hysteresis gap between the
-        open/closed thresholds. This is intentionally stricter than a single
-        threshold crossing, so ordinary landmark jitter on a static photo (autofocus
-        hunting, hand tremor, JPEG noise) can't be mistaken for a real blink.
+        Track one sustained blink followed by a stable head turn from the initial pose.
+        The yaw ratio is derived from FaceMesh nose and cheek landmarks.
         """
         key = self._tracker_key(cx, cy)
-        tracker = self._blink_trackers.setdefault(key, {
+        tracker = self._liveness_trackers.setdefault(key, {
             "state": "OPEN", "open_frames": 0, "closed_frames": 0,
-            "blinks": 0, "ear_history": []
+            "blinks": 0, "ear_history": [], "yaw_history": [],
+            "baseline_yaw_samples": [], "baseline_yaw": None,
+            "turn_frames": 0, "turned": False,
         })
 
-        # Smooth the EAR signal with a short rolling average to damp single-frame noise.
         hist = tracker["ear_history"]
         hist.append(raw_ear)
         if len(hist) > EAR_SMOOTHING_WINDOW:
             hist.pop(0)
         ear = sum(hist) / len(hist)
+
+        yaw_history = tracker["yaw_history"]
+        yaw_history.append(yaw)
+        if len(yaw_history) > YAW_SMOOTHING_WINDOW:
+            yaw_history.pop(0)
+        smoothed_yaw = float(np.median(yaw_history))
+        if tracker["baseline_yaw"] is None:
+            baseline_samples = tracker["baseline_yaw_samples"]
+            baseline_samples.append(smoothed_yaw)
+            if len(baseline_samples) >= YAW_SMOOTHING_WINDOW:
+                tracker["baseline_yaw"] = float(np.median(baseline_samples))
 
         if tracker["state"] == "OPEN":
             if ear < EAR_CLOSED_MAX:
@@ -727,7 +754,74 @@ class CameraThread(QThread):
             else:
                 tracker["open_frames"] = 0
 
-        return tracker["blinks"]
+        if tracker["blinks"] >= REQUIRED_BLINKS and tracker["baseline_yaw"] is not None:
+            if abs(smoothed_yaw - tracker["baseline_yaw"]) >= HEAD_TURN_THRESHOLD:
+                tracker["turn_frames"] += 1
+                if tracker["turn_frames"] >= MIN_TURN_FRAMES:
+                    tracker["turned"] = True
+            else:
+                tracker["turn_frames"] = 0
+
+        return tracker["blinks"], tracker["turned"]
+
+    @staticmethod
+    def _open_camera():
+        backends = (
+            ("DirectShow", cv2.CAP_DSHOW),
+            ("automatic", cv2.CAP_ANY),
+            ("Media Foundation", cv2.CAP_MSMF),
+        )
+        failures = []
+        for backend_name, backend in backends:
+            try:
+                capture = cv2.VideoCapture(0, backend)
+            except cv2.error as error:
+                failures.append(f"{backend_name} failed: {error}")
+                continue
+            if not capture.isOpened():
+                failures.append(f"{backend_name} could not open the camera")
+                capture.release()
+                continue
+
+            try:
+                has_frame, frame = capture.read()
+            except cv2.error as error:
+                failures.append(f"{backend_name} failed to read a frame: {error}")
+                capture.release()
+                continue
+
+            if has_frame and frame is not None:
+                return capture, frame, None
+
+            failures.append(f"{backend_name} opened but returned no frames")
+            capture.release()
+
+        return None, None, "; ".join(failures)
+
+    @staticmethod
+    def _is_black_frame(frame):
+        if frame is None or frame.size == 0:
+            return True
+        grayscale = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        return float(grayscale.mean()) < 2.0 and float(grayscale.std()) < 3.0
+
+    @staticmethod
+    def _draw_camera_warning(frame, message):
+        height, width = frame.shape[:2]
+        overlay_height = min(110, height)
+        cv2.rectangle(frame, (0, height // 2 - overlay_height // 2),
+                      (width, height // 2 + overlay_height // 2), (20, 27, 39), -1)
+        cv2.putText(
+            frame,
+            message,
+            (20, height // 2),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        return frame
 
     def run(self):
         self._running = True
@@ -740,10 +834,17 @@ class CameraThread(QThread):
             return
 
         self.refresh_known_faces()
+        today = date.today().isoformat()
+        self._attendance_acknowledged = {
+            row[0] for row in self.db.get_attendance(today, today)
+        }
 
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
-            self.status_changed.emit("Could not open webcam.")
+        cap, first_frame, camera_error = self._open_camera()
+        if cap is None:
+            self.status_changed.emit(
+                f"Could not start the webcam: {camera_error}. Check Windows camera "
+                "permissions, close other apps using the camera, and try again."
+            )
             self._running = False
             return
 
@@ -754,40 +855,72 @@ class CameraThread(QThread):
             )
         elif not HAS_MEDIAPIPE:
             self.status_changed.emit(
-                "Camera running with YuNet/SFace (liveness check disabled - install 'mediapipe' "
-                "to enable blink detection)."
+                "Camera running. Liveness unavailable: automatic attendance is disabled. "
+                "Install MediaPipe or use manual attendance after three checks."
             )
         else:
             self.status_changed.emit(
-                "Camera running with YuNet/SFace. Liveness check active (blink required)."
+                "Camera running with YuNet/SFace. Blink once, then turn your head slightly."
             )
 
         while self._running:
-            ret, frame = cap.read()
+            if first_frame is not None:
+                frame = first_frame
+                first_frame = None
+                ret = True
+            else:
+                ret, frame = cap.read()
             if not ret:
-                self.status_changed.emit("Lost camera feed.")
+                self.status_changed.emit(
+                    "Lost camera feed. Check that the camera is still connected and available."
+                )
                 break
 
+            if self._is_black_frame(frame):
+                self._draw_camera_warning(
+                    frame,
+                    "Camera image is black. Check the shutter, lighting and Windows permissions.",
+                )
+                if not getattr(self, "_black_feed_reported", False):
+                    self.status_changed.emit(
+                        "Camera running, but its image is black. Check the camera shutter, "
+                        "lighting and Windows camera permissions."
+                    )
+                    self._black_feed_reported = True
+                self.frame_ready.emit(frame)
+                self.msleep(30)
+                continue
+            if getattr(self, "_black_feed_reported", False):
+                self.status_changed.emit("Camera running. Camera image restored.")
+                self._black_feed_reported = False
+
             faces = face_recognizer.detect(frame)
-            eye_landmarks = get_eye_landmarks(frame)  # [] if mediapipe not installed
+            eye_landmarks = get_eye_landmarks(frame)
             attendance_successful = False
 
             for face in faces:
                 x, y, w, h = (int(value) for value in face[:4])
                 box_cx, box_cy = x + w / 2, y + h / 2
 
-                # Find the closest MediaPipe face mesh to this YuNet box, so we know
-                # which blink counter belongs to which detected face.
-                is_live = not self.liveness_enabled   # if liveness is unavailable, don't block matching
+                # Match each YuNet box with its closest FaceMesh landmarks.
+                is_live = False
                 blink_count = 0
+                head_turned = False
                 if self.liveness_enabled and eye_landmarks:
                     closest = min(eye_landmarks, key=lambda e: (e[0] - box_cx) ** 2 + (e[1] - box_cy) ** 2)
-                    ex, ey, ear = closest
-                    blink_count = self._update_blink_count(ex, ey, ear)
-                    is_live = blink_count >= REQUIRED_BLINKS
+                    ex, ey, ear, yaw = closest
+                    blink_count, head_turned = self._update_liveness(ex, ey, ear, yaw)
+                    is_live = blink_count >= REQUIRED_BLINKS and head_turned
 
-                name_label = f"Verifying... (blink twice to confirm, {blink_count}/{REQUIRED_BLINKS})"
-                color = (0, 255, 255)  # yellow while waiting for a blink
+                if not self.liveness_enabled:
+                    name_label = "Liveness unavailable"
+                elif blink_count < REQUIRED_BLINKS:
+                    name_label = "Blink once to continue"
+                elif not head_turned:
+                    name_label = "Turn head slightly left or right"
+                else:
+                    name_label = "Verifying identity..."
+                color = (0, 255, 255)
 
                 try:
                     embedding = face_recognizer.encode(frame, face)
@@ -795,12 +928,28 @@ class CameraThread(QThread):
                     embedding = None
                 sid, name, _ = find_best_match(embedding, self.known_embeddings)
 
+                if sid is not None and self.liveness_enabled and eye_landmarks:
+                    tracker_key = self._tracker_key(ex, ey)
+                    previous_sid = self._face_identity_by_tracker.get(tracker_key)
+                    if previous_sid is not None and previous_sid != sid:
+                        self._liveness_trackers.pop(tracker_key, None)
+                        blink_count = 0
+                        head_turned = False
+                        is_live = False
+                    self._face_identity_by_tracker[tracker_key] = sid
+
                 if sid is not None:
                     if not is_live:
-                        name_label = f"{name} (blink to confirm)"
+                        if self.liveness_enabled:
+                            prompt = (
+                                "blink once"
+                                if blink_count < REQUIRED_BLINKS
+                                else "turn head slightly"
+                            )
+                            name_label = f"{name} - {prompt}"
                         color = (0, 255, 255)
                     else:
-                        name_label = f"{name} (LIVE)"
+                        name_label = f"{name} (verified)"
                         color = (0, 200, 0)
                         attendance_successful = True
 
@@ -816,9 +965,13 @@ class CameraThread(QThread):
                                 )
                                 continue
                             self._last_marked[sid] = time_now()
-                            self.recognized.emit(
-                                sid, name, class_name, attendance_date, attendance_time
-                            )
+                            if sid not in self._attendance_acknowledged:
+                                self._attendance_acknowledged.add(sid)
+                                self.recognized.emit(
+                                    sid, name, class_name, attendance_date, attendance_time
+                                )
+                            else:
+                                name_label = f"{name} (already recorded)"
                 else:
                     name_label = "Unknown - retrying"
                     color = (0, 0, 255)
@@ -932,9 +1085,14 @@ class LiveRecognitionWidget(QWidget):
 
         self.status_label = QLabel("Status: idle")
         self.status_label.setObjectName("mutedLabel")
+        self.status_label.setWordWrap(True)
 
         self.last_recognized_label = QLabel("Last attendance: -")
         self.last_recognized_label.setWordWrap(True)
+
+        self.confirmation_label = QLabel("Ready for the next student.")
+        self.confirmation_label.setObjectName("attendanceConfirmation")
+        self.confirmation_label.setWordWrap(True)
 
         self.start_btn = QPushButton("Start Camera")
         self.start_btn.setObjectName("primaryButton")
@@ -957,9 +1115,9 @@ class LiveRecognitionWidget(QWidget):
         subtitle.setObjectName("pageSubtitle")
 
         liveness_note = QLabel(
-            "Liveness verification is active. Blink twice to confirm a person before attendance is marked."
+            "Liveness verification is active. Blink once, then turn your head slightly left or right."
             if HAS_MEDIAPIPE else
-            "Liveness verification is disabled. Install mediapipe to require blink verification."
+            "Liveness is unavailable. Automatic attendance is disabled; install mediapipe or use manual attendance."
         )
         liveness_note.setObjectName("mutedLabel")
         liveness_note.setWordWrap(True)
@@ -979,6 +1137,7 @@ class LiveRecognitionWidget(QWidget):
         session_layout = QVBoxLayout()
         session_layout.setSpacing(12)
         session_layout.addWidget(self.status_label)
+        session_layout.addWidget(self.confirmation_label)
         session_layout.addWidget(self.last_recognized_label)
         retry_note = QLabel(
             "Manual entry unlocks after three checks fail to recognize or confirm one visible face."
@@ -1010,6 +1169,7 @@ class LiveRecognitionWidget(QWidget):
             return
         self.manual_attendance_btn.setText("Manual attendance by roll number (0/3)")
         self.manual_attendance_btn.setEnabled(False)
+        self.confirmation_label.setText("Ready for the next student.")
         self.camera_thread = CameraThread(self.db)
         self.camera_thread.frame_ready.connect(self.update_frame)
         self.camera_thread.recognized.connect(self.on_recognized)
@@ -1036,6 +1196,9 @@ class LiveRecognitionWidget(QWidget):
         )
 
     def on_recognized(self, student_id, name, class_name, attendance_date, attendance_time):
+        self.confirmation_label.setText(
+            f"{name}'s attendance taken. Next student may come forward."
+        )
         self.last_recognized_label.setText(
             f"Last attendance: {name} ({student_id}) · {class_name} · {attendance_time}"
         )
@@ -2041,8 +2204,8 @@ def main():
     print("[INFO] Desktop recognition uses OpenCV YuNet + SFace.")
 
     if not HAS_MEDIAPIPE:
-        print("[INFO] 'mediapipe' not installed - liveness (blink) detection is disabled "
-              "and faces will be matched without a liveness check. Run: pip install mediapipe")
+        print("[WARNING] 'mediapipe' is not installed - automatic attendance is disabled. "
+              "Install it with: python -m pip install mediapipe")
 
     login = LoginDialog()
     if login.exec_() != QDialog.Accepted or not login.authenticated:

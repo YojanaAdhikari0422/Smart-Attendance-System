@@ -133,6 +133,92 @@ class DesktopAttendanceTests(unittest.TestCase):
         finally:
             database.conn.close()
 
+    def test_liveness_requires_one_blink_followed_by_a_stable_head_turn(self):
+        database = APP.Database(str(self.temp_path / "liveness.sqlite3"))
+        worker = APP.CameraThread(database)
+        try:
+            for _ in range(7):
+                blinks, turned = worker._update_liveness(200, 200, 0.30, 0.0)
+            self.assertEqual(blinks, 0)
+            self.assertFalse(turned)
+
+            for _ in range(5):
+                blinks, turned = worker._update_liveness(200, 200, 0.10, 0.0)
+            self.assertEqual(blinks, 0)
+            self.assertFalse(turned)
+
+            for _ in range(7):
+                blinks, turned = worker._update_liveness(200, 200, 0.30, 0.0)
+            self.assertEqual(blinks, 1)
+            self.assertFalse(turned)
+
+            for _ in range(APP.MIN_TURN_FRAMES + APP.YAW_SMOOTHING_WINDOW):
+                blinks, turned = worker._update_liveness(200, 200, 0.30, 0.15)
+            self.assertEqual(blinks, 1)
+            self.assertTrue(turned)
+        finally:
+            database.conn.close()
+
+    def test_camera_startup_falls_back_to_backend_that_returns_a_frame(self):
+        database = APP.Database(str(self.temp_path / "camera.sqlite3"))
+        worker = APP.CameraThread(database)
+        first_capture = type(
+            "FakeCapture",
+            (),
+            {
+                "isOpened": lambda self: False,
+                "release": lambda self: setattr(self, "released", True),
+            },
+        )()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        working_capture = type(
+            "FakeCapture",
+            (),
+            {
+                "isOpened": lambda self: True,
+                "read": lambda self: (True, frame),
+                "release": lambda self: setattr(self, "released", True),
+            },
+        )()
+        captures = [first_capture, working_capture]
+        backend_calls = []
+
+        def fake_video_capture(camera_index, backend):
+            backend_calls.append((camera_index, backend))
+            return captures[len(backend_calls) - 1]
+
+        try:
+            with patch.object(APP.cv2, "VideoCapture", side_effect=fake_video_capture):
+                capture, first_frame, error = worker._open_camera()
+
+            self.assertIs(capture, working_capture)
+            self.assertIs(first_frame, frame)
+            self.assertIsNone(error)
+            self.assertTrue(first_capture.released)
+            self.assertEqual(
+                backend_calls,
+                [(0, APP.cv2.CAP_DSHOW), (0, APP.cv2.CAP_ANY)],
+            )
+        finally:
+            working_capture.release()
+            database.conn.close()
+
+    def test_black_camera_frames_are_detected_and_not_mistaken_for_video(self):
+        black_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        almost_black_frame = black_frame.copy()
+        almost_black_frame[0, 0] = (255, 255, 255)
+        visible_frame = np.full((480, 640, 3), 64, dtype=np.uint8)
+
+        self.assertTrue(APP.CameraThread._is_black_frame(black_frame))
+        self.assertTrue(APP.CameraThread._is_black_frame(almost_black_frame))
+        self.assertFalse(APP.CameraThread._is_black_frame(visible_frame))
+
+        warned_frame = APP.CameraThread._draw_camera_warning(
+            black_frame.copy(),
+            "Camera image is black.",
+        )
+        self.assertFalse(APP.CameraThread._is_black_frame(warned_frame))
+
     def test_desktop_ui_exposes_student_and_attendance_actions(self):
         database = APP.Database(str(self.temp_path / "ui.sqlite3"))
         template = np.zeros((1, APP.SFACE_EMBEDDING_SIZE), dtype=np.float32)
@@ -178,6 +264,10 @@ class DesktopAttendanceTests(unittest.TestCase):
             self.assertEqual(
                 database.get_attendance(APP.date.today().isoformat(), APP.date.today().isoformat())[0][:3],
                 ("R-101", "Avery Student", "MCA"),
+            )
+            self.assertEqual(
+                live.confirmation_label.text(),
+                "Avery Student's attendance taken. Next student may come forward.",
             )
         finally:
             window.close()
