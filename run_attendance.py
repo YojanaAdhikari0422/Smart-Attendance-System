@@ -9,6 +9,7 @@ import sys
 
 PROJECT_DIR = Path(__file__).resolve().parent
 APP_SCRIPT = PROJECT_DIR / "attendance_system_with_blink.py"
+MODEL_SETUP_SCRIPT = PROJECT_DIR / "download_face_models.py"
 CONDA_ENV_NAME = "attendance"
 
 
@@ -54,6 +55,19 @@ def main():
             )
             print("Use .env.example as a template; do not commit .env.", file=sys.stderr)
             return 1
+
+    setup_command = [
+        conda_executable,
+        "run",
+        "--no-capture-output",
+        "-n",
+        CONDA_ENV_NAME,
+        "python",
+        str(MODEL_SETUP_SCRIPT),
+    ]
+    model_setup_result = subprocess.call(setup_command, cwd=PROJECT_DIR)
+    if model_setup_result != 0:
+        return model_setup_result
 
     command = [
         conda_executable,

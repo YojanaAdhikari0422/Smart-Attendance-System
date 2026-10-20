@@ -384,8 +384,9 @@
         <div class="layer" role="rowheader">Recognition limits</div><div>The configured fallback is a deterministic 32×32 grayscale pixel descriptor, which is not reliable production-grade biometric recognition. Liveness / anti-spoofing is not enabled.</div>
         <div class="layer" role="rowheader">Hosted storage</div><div>Flask-SQLAlchemy stores user records, face descriptor BLOBs, and daily attendance in PostgreSQL; Alembic migrations are tracked under <code>migrations/</code>.</div>
         <div class="layer" role="rowheader">Reports</div><div>Openpyxl creates date-filtered Excel downloads. The browser receives the workbook directly; reports are not stored on the service filesystem.</div>
-        <div class="layer" role="rowheader">Local desktop</div><div><code>attendance_system_with_blink.py</code> remains a PyQt program with its own local SQLite database, student classes, live camera workflow, and daily class-wise Excel attendance workbooks under <code>Attendance_records/</code>. It is not connected to the hosted PostgreSQL database.</div>
-        <div class="layer" role="rowheader">Desktop attendance workbook</div><div>Each recognized student is stored once in <code>Attendance_records/DD-MM-YYYY.xlsx</code>. Worksheets are grouped by class and contain name, roll number, class, and first attendance time.</div>
+        <div class="layer" role="rowheader">Local desktop</div><div><code>attendance_system_with_blink.py</code> remains a PyQt program with its own local SQLite database, student classes, YuNet/SFace camera workflow, four-photo enrollment, manual fallback, and daily class-wise workbooks under <code>Attendance_records/</code>. It is not connected to hosted PostgreSQL.</div>
+        <div class="layer" role="rowheader">Desktop recognition models</div><div>OpenCV YuNet detects face boxes and landmarks; SFace generates CPU embeddings. Four uploaded views are retained as descriptors only. The official model files are downloaded and SHA-256 verified by <code>download_face_models.py</code>.</div>
+        <div class="layer" role="rowheader">Desktop attendance workbook</div><div>After three unsuccessful checks of one visible face, an exact enrolled roll number can record manual attendance. Each student appears once in <code>Attendance_records/DD-MM-YYYY.xlsx</code>, on their class sheet with first attendance time.</div>
         <div class="layer" role="rowheader">Environment</div><div><code>requirements.txt</code> covers the web app. Secrets and local connection settings are documented by <code>.env.example</code> and the checked-in <code>.gitignore</code>.</div>
       </div>
       <div class="grid two" style="margin-top:13px">
@@ -434,6 +435,9 @@
 ├── webapp/                           # routes, models, transient vision processing
 ├── render.yaml                       # Render Blueprint
 ├── requirements.txt                  # web app dependencies
+├── requirements-desktop.txt          # local PyQt/OpenCV dependencies
+├── face_models.py                    # YuNet/SFace CPU inference helpers
+├── download_face_models.py           # checksummed OpenCV Zoo setup
 ├── migrations/                       # Alembic database migrations
 ├── templates/                        # authenticated web pages
 ├── static/                            # web UI and camera scripts

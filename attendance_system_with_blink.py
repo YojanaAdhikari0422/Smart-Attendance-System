@@ -12,20 +12,21 @@ Architecture
 - LiveRecognitionWidget  : Module 1 - start/stop camera, live overlay, auto attendance marking.
                            Gated by an OpenCV-driven liveness check (blink detection via
                            MediaPipe FaceMesh landmarks + Eye Aspect Ratio) - a face must
-                           blink at least once before it can be matched and marked present.
+                           blink twice before it can be matched and marked present.
 - RegistrationWidget     : Module 2 - capture faces, compute mean embedding, full user CRUD.
 - AnalyticsWidget        : Module 3 - attendance log table + per-student presence chart.
 - ExportWidget           : Module 4 - export attendance to .xlsx filtered by week/month/year.
 
 Run with:
-    pip install PyQt5 opencv-python numpy pandas openpyxl mediapipe
-    # optional, for real face recognition instead of the built-in fallback:
-    pip install face_recognition
+    conda activate attendance
+    python -m pip install -r requirements-desktop.txt
     python run_attendance.py
 
 Note: MediaPipe (not dlib) powers the liveness landmarks, since dlib requires compiling
 C++ on Windows. If mediapipe isn't installed, the app still runs - it just skips the
 liveness gate and matches faces directly (a status message says so on camera start).
+YuNet and SFace provide the desktop face detection and recognition; their pinned model
+files are downloaded and verified by the launcher.
 """
 
 import sys
@@ -47,7 +48,13 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QLabel, QLineEdit, QPushButton,
     QVBoxLayout, QHBoxLayout, QFormLayout, QListWidget, QListWidgetItem,
     QStackedWidget, QMessageBox, QTableWidget, QTableWidgetItem, QHeaderView,
-    QGroupBox, QComboBox, QFileDialog, QFrame, QAbstractItemView
+    QGroupBox, QComboBox, QFileDialog, QFrame, QAbstractItemView, QInputDialog
+)
+from face_models import (
+    MODEL_DIRECTORY,
+    SFACE_COSINE_THRESHOLD,
+    SFACE_EMBEDDING_SIZE,
+    get_face_recognizer,
 )
 
 # ======================================================================================
@@ -61,7 +68,6 @@ ATTENDANCE_RECORDS_DIR = Path(__file__).resolve().with_name("Attendance_records"
 ADMIN_USERNAME = os.environ.get("ATTENDANCE_ADMIN_USERNAME", "")
 ADMIN_PASSWORD = os.environ.get("ATTENDANCE_ADMIN_PASSWORD", "")
 CAPTURE_COUNT = 6          # number of frames captured per registration
-HAAR_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 
 APP_STYLESHEET = """
 QWidget {
@@ -209,21 +215,6 @@ def style_table(table):
 
 
 # ======================================================================================
-# OPTIONAL FACE RECOGNITION IMPORT (with a working fallback so the UI always runs)
-# ======================================================================================
-
-try:
-    import face_recognition
-    HAS_FACE_RECOGNITION = True
-    MATCH_THRESHOLD = 0.6          # good default for face_recognition's 128-d encodings
-except (ImportError, RuntimeError):
-    face_recognition = None
-    HAS_FACE_RECOGNITION = False
-    MATCH_THRESHOLD = 6.0          # tuned for the 32x32 grayscale fallback below
-
-FACE_CASCADE = cv2.CascadeClassifier(HAAR_CASCADE_PATH)
-
-# ======================================================================================
 # LIVENESS DETECTION (OpenCV-driven blink check via MediaPipe FaceMesh landmarks)
 # ======================================================================================
 # MediaPipe is used instead of dlib for landmarks - dlib requires compiling C++ on
@@ -301,52 +292,25 @@ def get_eye_landmarks(frame_bgr):
 # ======================================================================================
 
 def detect_faces(frame_bgr):
-    """Return a list of (x, y, w, h) boxes using a Haar cascade (works regardless of
-    which encoding backend is active, so both branches share the same detection step)."""
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    faces = FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=5, minSize=(60, 60))
-    return faces
+    """Return YuNet detections containing boxes, landmarks, and confidence scores."""
+    return get_face_recognizer().detect(frame_bgr)
 
 
-def get_face_encoding(frame_bgr, box):
-    """
-    Compute a face embedding for the given (x, y, w, h) box.
-    Uses face_recognition's 128-d encoding when available; otherwise falls back to a
-    deterministic 1024-d normalized-pixel descriptor so the whole pipeline still works
-    end-to-end without any extra dependency.
-    """
-    x, y, w, h = box
-    face_crop = frame_bgr[max(y, 0):y + h, max(x, 0):x + w]
-    if face_crop.size == 0:
-        return None
-
-    if HAS_FACE_RECOGNITION:
-        rgb_crop = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-        encodings = face_recognition.face_encodings(rgb_crop)
-        if encodings:
-            return encodings[0].astype(np.float64)
-        return None
-    else:
-        gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, (32, 32)).astype(np.float64) / 255.0
-        return resized.flatten()
-
-
-def find_best_match(embedding, known_embeddings, threshold):
-    """known_embeddings: dict student_id -> (name, embedding ndarray). Returns (student_id, name, distance) or (None, None, None)."""
+def find_best_match(embedding, known_embeddings):
+    """Match a normalized SFace feature against each student's multiple view templates."""
     if embedding is None or not known_embeddings:
         return None, None, None
 
-    best_id, best_name, best_dist = None, None, None
-    for sid, (name, known_emb) in known_embeddings.items():
-        if known_emb is None or known_emb.shape != embedding.shape:
+    best_id, best_name, best_similarity = None, None, None
+    for sid, (name, templates) in known_embeddings.items():
+        if templates is None or templates.ndim != 2 or templates.shape[1] != embedding.shape[0]:
             continue
-        d = float(np.linalg.norm(embedding - known_emb))
-        if best_dist is None or d < best_dist:
-            best_id, best_name, best_dist = sid, name, d
+        similarity = float(np.max(templates @ embedding))
+        if best_similarity is None or similarity > best_similarity:
+            best_id, best_name, best_similarity = sid, name, similarity
 
-    if best_dist is not None and best_dist < threshold:
-        return best_id, best_name, best_dist
+    if best_similarity is not None and best_similarity >= SFACE_COSINE_THRESHOLD:
+        return best_id, best_name, best_similarity
     return None, None, None
 
 
@@ -380,13 +344,18 @@ class Database:
                     student_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     embedding BLOB NOT NULL,
-                    class_name TEXT NOT NULL DEFAULT 'Unassigned'
+                    class_name TEXT NOT NULL DEFAULT 'Unassigned',
+                    face_model TEXT NOT NULL DEFAULT 'legacy'
                 )
             """)
             columns = {row[1] for row in cur.execute("PRAGMA table_info(users)")}
             if "class_name" not in columns:
                 cur.execute(
                     "ALTER TABLE users ADD COLUMN class_name TEXT NOT NULL DEFAULT 'Unassigned'"
+                )
+            if "face_model" not in columns:
+                cur.execute(
+                    "ALTER TABLE users ADD COLUMN face_model TEXT NOT NULL DEFAULT 'legacy'"
                 )
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS attendance (
@@ -402,17 +371,23 @@ class Database:
 
     # ---------------------------- USERS (CRUD) ----------------------------
 
-    def add_user(self, student_id, name, class_name, embedding):
-        blob = np.asarray(embedding, dtype=np.float64).tobytes()
+    def add_user(self, student_id, name, class_name, embeddings):
+        templates = np.asarray(embeddings, dtype=np.float32)
+        if templates.ndim != 2 or templates.shape[1] != SFACE_EMBEDDING_SIZE:
+            raise ValueError("Face enrollment must contain valid SFace descriptors.")
+        blob = templates.tobytes()
         with self.lock:
             cur = self.conn.cursor()
             cur.execute(
-                "INSERT INTO users (student_id, name, class_name, embedding) VALUES (?, ?, ?, ?)",
-                (student_id, name, class_name, blob)
+                """
+                INSERT INTO users (student_id, name, class_name, embedding, face_model)
+                VALUES (?, ?, ?, ?, 'opencv_sface')
+                """,
+                (student_id, name, class_name, blob),
             )
             self.conn.commit()
 
-    def update_user(self, student_id, name=None, class_name=None, embedding=None):
+    def update_user(self, student_id, name=None, class_name=None, embeddings=None):
         with self.lock:
             cur = self.conn.cursor()
             if name is not None:
@@ -422,9 +397,14 @@ class Database:
                     "UPDATE users SET class_name=? WHERE student_id=?",
                     (class_name, student_id),
                 )
-            if embedding is not None:
-                blob = np.asarray(embedding, dtype=np.float64).tobytes()
-                cur.execute("UPDATE users SET embedding=? WHERE student_id=?", (blob, student_id))
+            if embeddings is not None:
+                templates = np.asarray(embeddings, dtype=np.float32)
+                if templates.ndim != 2 or templates.shape[1] != SFACE_EMBEDDING_SIZE:
+                    raise ValueError("Face enrollment must contain valid SFace descriptors.")
+                cur.execute(
+                    "UPDATE users SET embedding=?, face_model='opencv_sface' WHERE student_id=?",
+                    (templates.tobytes(), student_id),
+                )
             self.conn.commit()
 
     def delete_user(self, student_id):
@@ -437,20 +417,44 @@ class Database:
     def get_all_users(self):
         with self.lock:
             cur = self.conn.cursor()
-            cur.execute("SELECT student_id, name, class_name FROM users ORDER BY name")
+            cur.execute(
+                "SELECT student_id, name, class_name, face_model FROM users ORDER BY name"
+            )
             return cur.fetchall()
 
     def get_all_embeddings(self):
-        """Returns dict: student_id -> (name, embedding ndarray). Loaded into RAM by the camera thread."""
+        """Return all active SFace templates; legacy encodings need photo re-enrollment."""
         with self.lock:
             cur = self.conn.cursor()
-            cur.execute("SELECT student_id, name, embedding FROM users")
+            cur.execute(
+                """
+                SELECT student_id, name, embedding
+                FROM users
+                WHERE face_model='opencv_sface'
+                """
+            )
             rows = cur.fetchall()
         result = {}
         for sid, name, blob in rows:
-            emb = np.frombuffer(blob, dtype=np.float64)
-            result[sid] = (name, emb)
+            values = np.frombuffer(blob, dtype=np.float32)
+            if values.size == 0 or values.size % SFACE_EMBEDDING_SIZE:
+                continue
+            templates = values.reshape((-1, SFACE_EMBEDDING_SIZE))
+            result[sid] = (name, templates)
         return result
+
+    def get_student_by_id(self, student_id):
+        with self.lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                """
+                SELECT student_id, name, class_name, face_model
+                FROM users
+                WHERE student_id=?
+                """,
+                (student_id,),
+            )
+            return cur.fetchone()
 
     # ---------------------------- ATTENDANCE ----------------------------
 
@@ -650,6 +654,7 @@ def write_daily_attendance_record(student_id, name, class_name, attendance_date,
 class CameraThread(QThread):
     frame_ready = pyqtSignal(np.ndarray)
     recognized = pyqtSignal(str, str, str, str, str)
+    unmatched_attempts_changed = pyqtSignal(int)
     status_changed = pyqtSignal(str)
 
     def __init__(self, db: Database, parent=None):
@@ -660,9 +665,26 @@ class CameraThread(QThread):
         self._last_marked = {}     # student_id -> last mark_attendance call time (avoid spamming DB every frame)
         self._blink_trackers = {}  # coarse position key -> {"consec": int, "blinks": int}
         self.liveness_enabled = HAS_MEDIAPIPE
+        self._unmatched_attempts = 0
+        self._last_unmatched_attempt = 0
 
     def refresh_known_faces(self):
         self.known_embeddings = self.db.get_all_embeddings()
+
+    def _update_unmatched_attempts(self, has_single_face, attendance_successful, current_time):
+        if attendance_successful and self._unmatched_attempts:
+            self._unmatched_attempts = 0
+            self._last_unmatched_attempt = current_time
+            self.unmatched_attempts_changed.emit(0)
+        elif (
+            has_single_face
+            and self._unmatched_attempts < 3
+            and current_time - self._last_unmatched_attempt >= 1
+        ):
+            self._last_unmatched_attempt = current_time
+            self._unmatched_attempts += 1
+            self.unmatched_attempts_changed.emit(self._unmatched_attempts)
+        return self._unmatched_attempts
 
     @staticmethod
     def _tracker_key(cx, cy):
@@ -714,6 +736,14 @@ class CameraThread(QThread):
 
     def run(self):
         self._running = True
+        self.status_changed.emit("Loading YuNet and SFace models...")
+        try:
+            face_recognizer = get_face_recognizer()
+        except (FileNotFoundError, RuntimeError, cv2.error) as error:
+            self.status_changed.emit(f"Face recognition could not start: {error}")
+            self._running = False
+            return
+
         self.refresh_known_faces()
 
         cap = cv2.VideoCapture(0)
@@ -722,12 +752,20 @@ class CameraThread(QThread):
             self._running = False
             return
 
-        if not HAS_MEDIAPIPE:
+        if not self.known_embeddings:
             self.status_changed.emit(
-                "Camera running (liveness check disabled - install 'mediapipe' to enable blink detection)."
+                "Camera running. Existing students need four SFace photos; manual attendance "
+                "will be available after three unmatched face checks."
+            )
+        elif not HAS_MEDIAPIPE:
+            self.status_changed.emit(
+                "Camera running with YuNet/SFace (liveness check disabled - install 'mediapipe' "
+                "to enable blink detection)."
             )
         else:
-            self.status_changed.emit("Camera running. Liveness check active (blink required).")
+            self.status_changed.emit(
+                "Camera running with YuNet/SFace. Liveness check active (blink required)."
+            )
 
         while self._running:
             ret, frame = cap.read()
@@ -735,13 +773,15 @@ class CameraThread(QThread):
                 self.status_changed.emit("Lost camera feed.")
                 break
 
-            faces = detect_faces(frame)
+            faces = face_recognizer.detect(frame)
             eye_landmarks = get_eye_landmarks(frame)  # [] if mediapipe not installed
+            attendance_successful = False
 
-            for (x, y, w, h) in faces:
+            for face in faces:
+                x, y, w, h = (int(value) for value in face[:4])
                 box_cx, box_cy = x + w / 2, y + h / 2
 
-                # Find the closest MediaPipe face mesh to this Haar box, so we know
+                # Find the closest MediaPipe face mesh to this YuNet box, so we know
                 # which blink counter belongs to which detected face.
                 is_live = not self.liveness_enabled   # if liveness is unavailable, don't block matching
                 blink_count = 0
@@ -754,28 +794,49 @@ class CameraThread(QThread):
                 name_label = f"Verifying... (blink twice to confirm, {blink_count}/{REQUIRED_BLINKS})"
                 color = (0, 255, 255)  # yellow while waiting for a blink
 
-                if is_live:
-                    embedding = get_face_encoding(frame, (x, y, w, h))
-                    sid, name, _ = find_best_match(embedding, self.known_embeddings, MATCH_THRESHOLD)
+                try:
+                    embedding = face_recognizer.encode(frame, face)
+                except (ValueError, cv2.error):
+                    embedding = None
+                sid, name, _ = find_best_match(embedding, self.known_embeddings)
 
-                    if sid is not None:
+                if sid is not None:
+                    if not is_live:
+                        name_label = f"{name} (blink to confirm)"
+                        color = (0, 255, 255)
+                    else:
                         name_label = f"{name} (LIVE)"
                         color = (0, 200, 0)
+                        attendance_successful = True
 
                         # Throttle DB writes to once every few seconds per person, not every frame.
                         last_time = self._last_marked.get(sid, 0)
                         if time_now() - last_time > 3:
-                            class_name, attendance_date, attendance_time = self.db.mark_attendance(sid)
+                            try:
+                                class_name, attendance_date, attendance_time = self.db.mark_attendance(sid)
+                            except sqlite3.Error as error:
+                                attendance_successful = False
+                                self.status_changed.emit(
+                                    f"Could not record attendance for {sid}: {error}"
+                                )
+                                continue
                             self._last_marked[sid] = time_now()
                             self.recognized.emit(
                                 sid, name, class_name, attendance_date, attendance_time
                             )
-                    else:
-                        name_label = "Unknown (LIVE)"
-                        color = (0, 0, 255)
+                else:
+                    name_label = "Unknown - retrying"
+                    color = (0, 0, 255)
 
                 cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
                 cv2.putText(frame, name_label, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
+            current_time = time_now()
+            self._update_unmatched_attempts(
+                has_single_face=len(faces) == 1,
+                attendance_successful=attendance_successful,
+                current_time=current_time,
+            )
 
             self.frame_ready.emit(frame)
             self.msleep(30)
@@ -877,7 +938,7 @@ class LiveRecognitionWidget(QWidget):
         self.status_label = QLabel("Status: idle")
         self.status_label.setObjectName("mutedLabel")
 
-        self.last_recognized_label = QLabel("Last recognized: -")
+        self.last_recognized_label = QLabel("Last attendance: -")
         self.last_recognized_label.setWordWrap(True)
 
         self.start_btn = QPushButton("Start Camera")
@@ -887,6 +948,13 @@ class LiveRecognitionWidget(QWidget):
         self.stop_btn = QPushButton("Stop Camera")
         self.stop_btn.clicked.connect(self.stop_camera)
         self.stop_btn.setEnabled(False)
+
+        self.manual_attendance_btn = QPushButton("Manual attendance by roll number (0/3)")
+        self.manual_attendance_btn.setToolTip(
+            "Enter an enrolled student's exact roll number after three failed attendance checks."
+        )
+        self.manual_attendance_btn.setEnabled(False)
+        self.manual_attendance_btn.clicked.connect(self.take_manual_attendance)
 
         header = QLabel("Live attendance")
         header.setObjectName("pageTitle")
@@ -909,6 +977,7 @@ class LiveRecognitionWidget(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addWidget(self.start_btn)
         btn_row.addWidget(self.stop_btn)
+        btn_row.addWidget(self.manual_attendance_btn)
         btn_row.addStretch()
 
         session_box = QGroupBox("Session status")
@@ -916,6 +985,12 @@ class LiveRecognitionWidget(QWidget):
         session_layout.setSpacing(12)
         session_layout.addWidget(self.status_label)
         session_layout.addWidget(self.last_recognized_label)
+        retry_note = QLabel(
+            "Manual entry unlocks after three checks fail to recognize or confirm one visible face."
+        )
+        retry_note.setObjectName("mutedLabel")
+        retry_note.setWordWrap(True)
+        session_layout.addWidget(retry_note)
         session_layout.addSpacing(8)
         session_layout.addWidget(liveness_note)
         session_layout.addStretch()
@@ -938,9 +1013,12 @@ class LiveRecognitionWidget(QWidget):
     def start_camera(self):
         if self.camera_thread is not None and self.camera_thread.isRunning():
             return
+        self.manual_attendance_btn.setText("Manual attendance by roll number (0/3)")
+        self.manual_attendance_btn.setEnabled(False)
         self.camera_thread = CameraThread(self.db)
         self.camera_thread.frame_ready.connect(self.update_frame)
         self.camera_thread.recognized.connect(self.on_recognized)
+        self.camera_thread.unmatched_attempts_changed.connect(self.on_unmatched_attempts_changed)
         self.camera_thread.status_changed.connect(self.on_status)
         self.camera_thread.start()
         self.start_btn.setEnabled(False)
@@ -953,6 +1031,8 @@ class LiveRecognitionWidget(QWidget):
         self.video_label.setText("Camera is stopped.")
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
+        self.manual_attendance_btn.setEnabled(False)
+        self.manual_attendance_btn.setText("Manual attendance by roll number (0/3)")
 
     def update_frame(self, frame):
         pixmap = cv_to_qpixmap(frame)
@@ -962,7 +1042,7 @@ class LiveRecognitionWidget(QWidget):
 
     def on_recognized(self, student_id, name, class_name, attendance_date, attendance_time):
         self.last_recognized_label.setText(
-            f"Last recognized: {name} ({student_id}) · {class_name} · {attendance_time}"
+            f"Last attendance: {name} ({student_id}) · {class_name} · {attendance_time}"
         )
         export_key = (attendance_date, student_id)
         workbook_path = (
@@ -987,13 +1067,79 @@ class LiveRecognitionWidget(QWidget):
             return
 
         self._exported_attendance.add(export_key)
+        project_directory = Path(__file__).resolve().parent
+        try:
+            display_path = workbook_path.relative_to(project_directory)
+        except ValueError:
+            display_path = workbook_path
         self.status_label.setText(
-            f"Attendance saved to {workbook_path.relative_to(Path(__file__).resolve().parent)}"
+            f"Attendance saved to {display_path}"
+        )
+
+    def on_unmatched_attempts_changed(self, attempts):
+        self.manual_attendance_btn.setText(
+            f"Manual attendance by roll number ({attempts}/3)"
+        )
+        self.manual_attendance_btn.setEnabled(attempts >= 3)
+        if attempts:
+            self.status_label.setText(
+                f"Attendance confirmation attempt {attempts}/3 was unsuccessful."
+                if attempts < 3
+                else "Three attendance checks failed. Manual roll-number attendance is available."
+            )
+
+    def take_manual_attendance(self):
+        student_id, accepted = QInputDialog.getText(
+            self,
+            "Manual attendance",
+            "Enter the enrolled student's exact roll number:",
+        )
+        student_id = student_id.strip()
+        if not accepted or not student_id:
+            return
+
+        student = self.db.get_student_by_id(student_id)
+        if student is None:
+            QMessageBox.warning(
+                self,
+                "Student Not Found",
+                "No enrolled student has that exact roll number. Check it and try again.",
+            )
+            return
+
+        _, name, class_name, _ = student
+        try:
+            class_name, attendance_date, attendance_time = self.db.mark_attendance(student_id)
+        except sqlite3.Error as error:
+            QMessageBox.critical(self, "Attendance Failed", f"Could not record attendance:\n{error}")
+            return
+
+        self.on_recognized(
+            student_id, name, class_name, attendance_date, attendance_time
+        )
+        workbook_path = (
+            ATTENDANCE_RECORDS_DIR
+            / f"{date.fromisoformat(attendance_date).strftime('%d-%m-%Y')}.xlsx"
+        )
+        if not workbook_path.is_file():
+            QMessageBox.warning(
+                self,
+                "Excel File Not Updated",
+                "Attendance was recorded in the database, but the daily Excel workbook could not be updated. "
+                "Check the status message and make sure the workbook is not open in Excel.",
+            )
+            return
+        QMessageBox.information(
+            self,
+            "Manual Attendance Recorded",
+            f"Recorded {name} ({student_id}) in {class_name}.",
         )
 
     def on_status(self, message):
         self.status_label.setText(f"Status: {message}")
-        self.start_btn.setEnabled(not message.startswith("Camera running"))
+        self.start_btn.setEnabled(
+            not message.startswith(("Camera running", "Loading YuNet"))
+        )
         self.stop_btn.setEnabled(message.startswith("Camera running"))
 
     def refresh_known_faces(self):
@@ -1017,6 +1163,8 @@ class RegistrationWidget(QWidget):
         self.capture_timer = QTimer()
         self.capture_timer.timeout.connect(self._update_capture_preview)
         self.captured_embeddings = []
+        self.uploaded_photo_paths = []
+        self.face_recognizer = None
         self.editing_student_id = None
 
         header = QLabel("Students")
@@ -1061,6 +1209,12 @@ class RegistrationWidget(QWidget):
         self.stop_capture_btn.clicked.connect(self.stop_capture)
         self.stop_capture_btn.setEnabled(False)
 
+        self.upload_photos_btn = QPushButton("Upload 4 photos")
+        self.upload_photos_btn.clicked.connect(self.upload_enrollment_photos)
+        self.photo_status_label = QLabel("Or upload four front/side/up/down face photos.")
+        self.photo_status_label.setObjectName("mutedLabel")
+        self.photo_status_label.setWordWrap(True)
+
         self.clear_form_btn = QPushButton("Clear form")
         self.clear_form_btn.clicked.connect(self.clear_form)
 
@@ -1068,6 +1222,9 @@ class RegistrationWidget(QWidget):
         capture_btn_row.addWidget(self.start_capture_btn)
         capture_btn_row.addWidget(self.grab_frame_btn)
         capture_btn_row.addWidget(self.stop_capture_btn)
+        upload_row = QHBoxLayout()
+        upload_row.addWidget(self.upload_photos_btn)
+        upload_row.addWidget(self.photo_status_label, 1)
 
         form_box = QGroupBox("Add a new student")
         form_layout = QVBoxLayout()
@@ -1075,6 +1232,7 @@ class RegistrationWidget(QWidget):
         form_layout.addWidget(self.preview_label)
         form_layout.addWidget(self.capture_progress_label)
         form_layout.addLayout(capture_btn_row)
+        form_layout.addLayout(upload_row)
         row2 = QHBoxLayout()
         row2.addWidget(self.save_btn)
         row2.addWidget(self.clear_form_btn)
@@ -1083,12 +1241,15 @@ class RegistrationWidget(QWidget):
         form_box.setMinimumWidth(430)
 
         # ---- CRUD table ----
-        self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(["Roll Number", "Name", "Class", "Actions"])
+        self.table = QTableWidget(0, 5)
+        self.table.setHorizontalHeaderLabels(
+            ["Roll Number", "Name", "Class", "Face model", "Actions"]
+        )
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeToContents)
         style_table(self.table)
 
         self.search_input = QLineEdit()
@@ -1125,6 +1286,13 @@ class RegistrationWidget(QWidget):
     def start_capture(self):
         if self.capture_cap is not None:
             return
+        try:
+            self.face_recognizer = get_face_recognizer()
+        except (FileNotFoundError, RuntimeError, cv2.error) as error:
+            QMessageBox.critical(self, "Face Model Setup Required", str(error))
+            return
+        self.uploaded_photo_paths = []
+        self.photo_status_label.setText("Or upload four front/side/up/down face photos.")
         self.capture_cap = cv2.VideoCapture(0)
         if not self.capture_cap.isOpened():
             QMessageBox.warning(self, "Camera Error",
@@ -1146,8 +1314,9 @@ class RegistrationWidget(QWidget):
         if not ret:
             return
         self._last_capture_frame = frame
-        faces = detect_faces(frame)
-        for (x, y, w, h) in faces:
+        faces = self.face_recognizer.detect(frame)
+        for face in faces:
+            x, y, w, h = (int(value) for value in face[:4])
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 200, 0), 2)
         pixmap = cv_to_qpixmap(frame)
         self.preview_label.setPixmap(
@@ -1158,15 +1327,19 @@ class RegistrationWidget(QWidget):
         if not hasattr(self, "_last_capture_frame"):
             return
         frame = self._last_capture_frame
-        faces = detect_faces(frame)
+        faces = self.face_recognizer.detect(frame)
         if len(faces) == 0:
             QMessageBox.information(self, "No Face Found", "No face detected in the current frame. Try again.")
             return
-        # Use the largest detected face
-        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-        embedding = get_face_encoding(frame, (x, y, w, h))
-        if embedding is None:
-            QMessageBox.information(self, "Encoding Failed", "Could not compute an encoding for this frame. Try again.")
+        if len(faces) > 1:
+            QMessageBox.information(
+                self, "More Than One Face", "Make sure only the student being enrolled is visible."
+            )
+            return
+        try:
+            embedding = self.face_recognizer.encode(frame, faces[0])
+        except (ValueError, cv2.error) as error:
+            QMessageBox.information(self, "Encoding Failed", f"Could not process this face: {error}")
             return
 
         self.captured_embeddings.append(embedding)
@@ -1176,7 +1349,33 @@ class RegistrationWidget(QWidget):
             self.grab_frame_btn.setEnabled(False)
             self.save_btn.setEnabled(True)
             QMessageBox.information(self, "Capture Complete",
-                                     "Enough frames captured. Click 'Save / Update Person' to store the mean encoding.")
+                                     "Enough face samples captured. Save the student to finish enrollment.")
+
+    def upload_enrollment_photos(self):
+        file_paths, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Select exactly four face photos",
+            "",
+            "Face photos (*.jpg *.jpeg *.png *.bmp *.webp)",
+        )
+        if not file_paths:
+            return
+        if len(file_paths) != 4:
+            QMessageBox.warning(
+                self,
+                "Select Four Photos",
+                f"Select exactly four photos; you selected {len(file_paths)}.",
+            )
+            return
+        if self.capture_cap is not None:
+            self.stop_capture()
+        self.captured_embeddings = []
+        self.uploaded_photo_paths = file_paths
+        self.capture_progress_label.setText("Photo enrollment selected (four views).")
+        self.photo_status_label.setText(
+            "Four photos selected. Source photos will only be read for enrollment, not copied into the project."
+        )
+        self.save_btn.setEnabled(True)
 
     def stop_capture(self):
         self.capture_timer.stop()
@@ -1187,6 +1386,7 @@ class RegistrationWidget(QWidget):
         self.grab_frame_btn.setEnabled(False)
         self.stop_capture_btn.setEnabled(False)
         self.preview_label.setText("Capture preview will appear here.")
+        self._last_capture_frame = None
 
     # ---------------- save / CRUD ----------------
 
@@ -1200,25 +1400,55 @@ class RegistrationWidget(QWidget):
                 self, "Missing Info", "Please enter the student's name, roll number, and class."
             )
             return
-        if not self.editing_student_id and not self.captured_embeddings:
+        enrollment_embeddings = None
+        if self.uploaded_photo_paths:
+            if len(self.uploaded_photo_paths) != 4:
+                QMessageBox.warning(
+                    self, "Select Four Photos", "Select exactly four face photos to enroll."
+                )
+                return
+            try:
+                self.face_recognizer = self.face_recognizer or get_face_recognizer()
+                enrollment_embeddings = np.vstack([
+                    self.face_recognizer.encode_enrollment_photo(path)
+                    for path in self.uploaded_photo_paths
+                ])
+            except (FileNotFoundError, RuntimeError, ValueError, cv2.error) as error:
+                QMessageBox.warning(
+                    self,
+                    "Photo Enrollment Failed",
+                    f"No student data was changed. Check the four photos and try again.\n\n{error}",
+                )
+                return
+        elif self.captured_embeddings:
+            mean_embedding = np.mean(np.vstack(self.captured_embeddings), axis=0)
+            norm = float(np.linalg.norm(mean_embedding))
+            if not np.isfinite(norm) or norm == 0:
+                QMessageBox.warning(
+                    self, "Enrollment Failed", "The captured face samples did not make a valid descriptor."
+                )
+                return
+            enrollment_embeddings = (mean_embedding / norm).reshape(1, -1)
+
+        if not self.editing_student_id and enrollment_embeddings is None:
             QMessageBox.warning(self, "No Captures", "Please capture at least one face frame first.")
             return
 
-        mean_encoding = (
-            np.mean(np.array(self.captured_embeddings), axis=0)
-            if self.captured_embeddings else None
-        )
         if self.editing_student_id:
             self.db.update_user(
                 self.editing_student_id,
                 name=name,
                 class_name=class_name,
-                embedding=mean_encoding,
+                embeddings=enrollment_embeddings,
             )
-            detail = "Profile updated."
+            detail = (
+                "Profile and face model updated."
+                if enrollment_embeddings is not None
+                else "Profile updated. Existing face photos are still needed to enable the new recognizer."
+            )
         else:
             try:
-                self.db.add_user(student_id, name, class_name, mean_encoding)
+                self.db.add_user(student_id, name, class_name, enrollment_embeddings)
             except sqlite3.IntegrityError:
                 QMessageBox.warning(
                     self,
@@ -1226,7 +1456,11 @@ class RegistrationWidget(QWidget):
                     f"A student with roll number '{student_id}' is already enrolled.",
                 )
                 return
-            detail = f"Saved face data from {len(self.captured_embeddings)} frame(s)."
+            detail = (
+                "Saved four photo views."
+                if self.uploaded_photo_paths
+                else f"Saved face data from {len(self.captured_embeddings)} camera frame(s)."
+            )
 
         QMessageBox.information(
             self, "Saved", f"{name} ({student_id}) · {class_name}\n{detail}"
@@ -1236,16 +1470,23 @@ class RegistrationWidget(QWidget):
         if self.on_users_changed:
             self.on_users_changed()
 
-    def edit_person(self, student_id, name, class_name):
+    def edit_person(self, student_id, name, class_name, face_model):
         self.editing_student_id = student_id
         self.id_input.setText(student_id)
         self.id_input.setEnabled(False)
         self.name_input.setText(name)
         self.class_input.setText(class_name)
         self.captured_embeddings = []
-        self.capture_progress_label.setText(
-            f"Editing {name}. Update the name only, or capture a new face to replace the saved encoding."
-        )
+        self.uploaded_photo_paths = []
+        if face_model == "opencv_sface":
+            self.capture_progress_label.setText(
+                f"Editing {name}. Existing photo templates are active; upload four new views or capture samples to replace them."
+            )
+        else:
+            self.capture_progress_label.setText(
+                f"Editing {name}. Upload four face photos or capture new samples to enable recognition."
+            )
+        self.photo_status_label.setText("Or upload four front/side/up/down face photos.")
         self.save_btn.setText("Update person")
         self.save_btn.setEnabled(True)
 
@@ -1269,20 +1510,24 @@ class RegistrationWidget(QWidget):
         self.name_input.clear()
         self.id_input.clear()
         self.class_input.clear()
+        self.uploaded_photo_paths = []
         self.id_input.setEnabled(True)
         self.captured_embeddings = []
         self.save_btn.setText("Save student")
         self.capture_progress_label.setText(f"Captured 0 / {CAPTURE_COUNT} frames")
+        self.photo_status_label.setText("Or upload four front/side/up/down face photos.")
         self.save_btn.setEnabled(False)
 
     def refresh_table(self):
         users = self.db.get_all_users()
         self.table.setRowCount(0)
-        for row_idx, (student_id, name, class_name) in enumerate(users):
+        for row_idx, (student_id, name, class_name, face_model) in enumerate(users):
             self.table.insertRow(row_idx)
             self.table.setItem(row_idx, 0, QTableWidgetItem(student_id))
             self.table.setItem(row_idx, 1, QTableWidgetItem(name))
             self.table.setItem(row_idx, 2, QTableWidgetItem(class_name))
+            enrollment_status = "Ready" if face_model == "opencv_sface" else "Upload 4 photos"
+            self.table.setItem(row_idx, 3, QTableWidgetItem(enrollment_status))
 
             actions_widget = QWidget()
             actions_layout = QHBoxLayout()
@@ -1290,7 +1535,9 @@ class RegistrationWidget(QWidget):
 
             edit_btn = QPushButton("Edit")
             edit_btn.clicked.connect(
-                lambda _, sid=student_id, n=name, c=class_name: self.edit_person(sid, n, c)
+                lambda _, sid=student_id, n=name, c=class_name, m=face_model: self.edit_person(
+                    sid, n, c, m
+                )
             )
 
             delete_btn = QPushButton("Delete")
@@ -1300,7 +1547,7 @@ class RegistrationWidget(QWidget):
             actions_layout.addWidget(edit_btn)
             actions_layout.addWidget(delete_btn)
             actions_widget.setLayout(actions_layout)
-            self.table.setCellWidget(row_idx, 3, actions_widget)
+            self.table.setCellWidget(row_idx, 4, actions_widget)
         self.user_count_label.setText(f"{len(users)} students")
         self.filter_users(self.search_input.text())
 
@@ -1745,10 +1992,7 @@ def main():
     app.setFont(QFont("Segoe UI", 10))
     app.setStyleSheet(APP_STYLESHEET)
 
-    if not HAS_FACE_RECOGNITION:
-        print("[INFO] 'face_recognition' unavailable - using a built-in pixel-based "
-              "fallback encoder so the app still runs. For real face recognition accuracy, "
-              "run: pip install face_recognition")
+    print("[INFO] Desktop recognition uses OpenCV YuNet + SFace.")
 
     if not HAS_MEDIAPIPE:
         print("[INFO] 'mediapipe' not installed - liveness (blink) detection is disabled "

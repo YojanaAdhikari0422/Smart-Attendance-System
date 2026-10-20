@@ -22,6 +22,7 @@ htmlcov/
 
 # Local biometric and attendance data
 Attendance_records/
+/models/
 *.db
 *.sqlite
 *.sqlite3

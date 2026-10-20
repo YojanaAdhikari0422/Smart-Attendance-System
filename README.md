@@ -42,6 +42,21 @@ python run_attendance.py
 
 The launcher runs `attendance_system_with_blink.py` in the Conda environment named `attendance` and sets the project folder as its working directory. Before the first run, create a private `.env` from `.env.example` and set `ATTENDANCE_ADMIN_USERNAME` and `ATTENDANCE_ADMIN_PASSWORD`. Keep `.env` out of source control.
 
-In the desktop app, use **Add new student** to enter the student's name, roll number, and class, then capture face samples and save. Use **Take attendance** to open live recognition. Each recognized student is recorded in `Attendance_records/DD-MM-YYYY.xlsx` (for example, `20-10-2026.xlsx`). The workbook contains one sheet per class, with the columns Name, Roll Number, Class, and Attendance Time. Existing students are kept and assigned to **Unassigned** until you update their class from the Students directory. Keep the workbook closed in Excel while the app is writing attendance.
+On a clean desktop environment, install the separate desktop dependencies first:
+
+```powershell
+conda activate attendance
+python -m pip install -r requirements-desktop.txt
+```
+
+The launcher verifies and, if needed, downloads the official OpenCV Zoo YuNet and SFace CPU model files into the ignored `models/` folder. The files are checked against pinned SHA-256 digests. The one-time SFace download is about 37 MB. To download them manually, run `python download_face_models.py`.
+
+In the desktop app, use **Add new student** to enter the student's name, roll number, and class. Either capture the student with the camera or click **Upload 4 photos** and select exactly four clear face images from different views (for example: front, left, right, and a slight up/down angle). Saving extracts and stores face descriptors; the selected source photos are not copied into the project or saved in the database. For existing students, click **Edit**, then upload four photos and save to replace the old face template.
+
+Use **Take attendance** to open live recognition. If one face is visible but not recognized or not yet confirmed by the blink check, the app counts at most one unsuccessful attendance check per second. After three checks, **Manual attendance by roll number** becomes available. Enter the exact roll number of an already enrolled student; the database rejects unknown IDs. Recognition and manual attendance both update `Attendance_records/DD-MM-YYYY.xlsx` (for example, `20-10-2026.xlsx`), with one sheet per class and the columns Name, Roll Number, Class, and Attendance Time. Each student has one row per day using their first attendance time. Keep the workbook closed in Excel while attendance is being recorded.
+
+Existing students remain in the database, but their old face templates are marked as legacy and cannot be compared to SFace. Upload four new photos or capture a new face enrollment before expecting automatic recognition for them. They can still be recorded through the manual roll-number fallback.
+
+The OpenCV YuNet detector and SFace recognizer improve detection and matching across moderate pose changes using CPU inference. They cannot guarantee identification at every angle, under poor lighting/occlusion, or for extreme profile views. Test with consenting students and use manual attendance when recognition is uncertain; do not treat face matching as security-grade identity verification.
 
 The desktop app continues to use its local SQLite database, separate from the Render-hosted web application's PostgreSQL data.
