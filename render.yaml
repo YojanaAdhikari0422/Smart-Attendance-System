@@ -13,17 +13,8 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
-        fromDatabase:
-          name: smart-attendance-db
-          property: connectionString
+        sync: false
       - key: WEB_ADMIN_USERNAME
         sync: false
       - key: WEB_ADMIN_PASSWORD
         sync: false
-
-databases:
-  - name: smart-attendance-db
-    databaseName: smart_attendance
-    user: smart_attendance
-    plan: free
-    region: oregon

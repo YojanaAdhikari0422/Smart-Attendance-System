@@ -197,19 +197,19 @@
   <main class="main">
     <div class="topline">
       <span>ENGINEERING / SYSTEM MAP / ONBOARDING</span>
-      <span class="badge"><i class="badge-dot"></i> Render web app + local desktop</span>
+      <span class="badge"><i class="badge-dot"></i> Render-hosted web application</span>
     </div>
 
     <header class="hero" id="overview">
       <div class="eyebrow">Repository architecture</div>
       <h1>Smart Attendance System</h1>
-      <p class="lede">A browser-based attendance web app deployed on Render, with authenticated workflows for enrolling people, processing browser camera frames, recording daily attendance, reviewing history, and exporting reports. A separate PyQt desktop app remains available for local-only use.</p>
+      <p class="lede">A browser-based attendance web app deployed on Render, with authenticated workflows for enrolling people, processing browser camera frames, recording daily attendance, reviewing history, and exporting reports.</p>
       <div class="hero-meta">
         <span>Flask + Gunicorn web application</span>
-        <span>Render PostgreSQL persistence</span>
+        <span>Supabase PostgreSQL persistence</span>
         <span>Browser camera + OpenCV API</span>
         <span>CSRF-protected admin sessions</span>
-        <span>Separate PyQt desktop app</span>
+        <span>Web-only application</span>
       </div>
     </header>
 
@@ -354,7 +354,7 @@
           <div class="kicker">HTTP interface</div><h3><code>webapp/routes.py</code></h3><p>Implements dashboard, directory, analytics, report download, enrollment, and recognition workflows.</p><a class="ref" href="webapp/routes.py">webapp/routes.py · page and API routes</a>
         </article>
         <article class="card module" style="--accent:var(--blue)" data-search="browser camera javascript consent JPEG CSRF polling">
-          <div class="kicker">Camera experience</div><h3><code>camera.js</code></h3><p>Requests browser camera permission, captures samples, sends protected API requests, and renders recognition status.</p><a class="ref" href="static/camera.js">static/camera.js · camera workflows</a>
+          <div class="kicker">Camera experience</div><h3><code>camera.js</code></h3><p>Requests browser camera permission, captures samples, sends protected API requests, and renders recognition status.</p><a class="ref" href="webapp/static/camera.js">webapp/static/camera.js · camera workflows</a>
         </article>
         <article class="card module" style="--accent:var(--violet)" data-search="SQLAlchemy PostgreSQL User Attendance constraints models">
           <div class="kicker">Persistence</div><h3>SQLAlchemy models</h3><p>Defines user descriptors, attendance records, uniqueness constraints, and relationships used by PostgreSQL.</p><a class="ref" href="webapp/models.py">webapp/models.py · data models</a>
@@ -363,20 +363,20 @@
           <div class="kicker">Vision processing</div><h3><code>webapp/vision.py</code></h3><p>Decodes bounded JPEG inputs, detects faces, computes descriptors, and matches against enrolled people in memory.</p><a class="ref" href="webapp/vision.py">webapp/vision.py · vision helpers</a>
         </article>
         <article class="card module" style="--accent:var(--blue)" data-search="templates Jinja responsive screens dashboard live people analytics reports">
-          <div class="kicker">Web interface</div><h3>Jinja templates</h3><p>Renders the responsive authenticated workspace, live attendance screen, people directory, analytics, and reports.</p><a class="ref" href="templates/">templates/ · page templates</a>
+          <div class="kicker">Web interface</div><h3>Jinja templates</h3><p>Renders the responsive authenticated workspace, live attendance screen, people directory, analytics, and reports.</p><a class="ref" href="webapp/templates/">webapp/templates/ · page templates</a>
         </article>
         <article class="card module" style="--accent:var(--violet)" data-search="Alembic Flask Migrate schema migration deployment">
           <div class="kicker">Schema lifecycle</div><h3>Alembic migrations</h3><p>Versioned schema changes are applied as part of the Render startup command before Gunicorn serves traffic.</p><a class="ref" href="migrations/">migrations/ · database revisions</a>
         </article>
         <article class="card module" style="--accent:var(--amber)" data-search="Render blueprint build start PORT PostgreSQL health">
-          <div class="kicker">Deployment</div><h3><code>render.yaml</code></h3><p>Declares the hosted web service, database, health check, dynamic port binding, and deployment commands.</p><a class="ref" href="render.yaml">render.yaml · Render blueprint</a>
+          <div class="kicker">Deployment</div><h3><code>render.yaml</code></h3><p>Declares the hosted web service, external database URL, health check, dynamic port binding, and deployment commands.</p><a class="ref" href="render.yaml">render.yaml · Render blueprint</a>
         </article>
       </div>
       <p class="no-results" id="no-results">No modules match that search. Try “camera”, “database”, “routes”, or a module name.</p>
     </section>
 
     <section id="stack">
-      <div class="section-head"><div><div class="eyebrow">04 / Runtime profile</div><h2>Technology stack & external dependencies</h2><p class="section-sub">The Render-hosted web application is the primary attendance workflow. The PyQt application remains a separate local option and retains its own SQLite data.</p></div></div>
+      <div class="section-head"><div><div class="eyebrow">04 / Runtime profile</div><h2>Technology stack & external dependencies</h2><p class="section-sub">This repository contains the Render-hosted web application and its deployment configuration.</p></div></div>
       <div class="stack-list" role="table" aria-label="Technology stack">
         <div class="layer" role="rowheader">Web application</div><div>Flask, Jinja templates, session authentication, CSRF protection, and JSON API routes in <code>webapp/</code>.</div>
         <div class="layer" role="rowheader">Render runtime</div><div>Gunicorn binds to Render's dynamic <code>PORT</code>; <code>/health</code> verifies database availability.</div>
@@ -384,19 +384,19 @@
         <div class="layer" role="rowheader">Recognition limits</div><div>The configured fallback is a deterministic 32×32 grayscale pixel descriptor, which is not reliable production-grade biometric recognition. Liveness / anti-spoofing is not enabled.</div>
         <div class="layer" role="rowheader">Hosted storage</div><div>Flask-SQLAlchemy stores user records, face descriptor BLOBs, and daily attendance in PostgreSQL; Alembic migrations are tracked under <code>migrations/</code>.</div>
         <div class="layer" role="rowheader">Reports</div><div>Openpyxl creates date-filtered Excel downloads. The browser receives the workbook directly; reports are not stored on the service filesystem.</div>
-        <div class="layer" role="rowheader">Local desktop</div><div><code>attendance_system_with_blink.py</code> remains a PyQt program with its own local SQLite database, student classes, YuNet/SFace camera workflow, four-photo enrollment, manual fallback, and daily class-wise workbooks under <code>Attendance_records/</code>. It is not connected to hosted PostgreSQL.</div>
-        <div class="layer" role="rowheader">Desktop recognition models</div><div>OpenCV YuNet detects face boxes and landmarks; SFace generates CPU embeddings. Four uploaded views are retained as descriptors only. The official model files are downloaded and SHA-256 verified by <code>download_face_models.py</code>.</div>
-        <div class="layer" role="rowheader">Desktop attendance workbook</div><div>After three unsuccessful checks of one visible face, an exact enrolled roll number can record manual attendance. Each student appears once in <code>Attendance_records/DD-MM-YYYY.xlsx</code>, on their class sheet with first attendance time.</div>
+        <div class="layer" role="rowheader">Browser interface</div><div>Jinja templates and static JavaScript/CSS in <code>webapp/templates/</code> and <code>webapp/static/</code> provide the authenticated attendance workflow.</div>
+        <div class="layer" role="rowheader">Deployment configuration</div><div><code>render.yaml</code> declares the Render web service and prompts for the external Supabase <code>DATABASE_URL</code>, alongside the health check and startup commands.</div>
+        <div class="layer" role="rowheader">Application tests</div><div><code>tests/</code> exercises the Flask pages, API workflows, attendance records, and report exports.</div>
         <div class="layer" role="rowheader">Environment</div><div><code>requirements.txt</code> covers the web app. Secrets and local connection settings are documented by <code>.env.example</code> and the checked-in <code>.gitignore</code>.</div>
       </div>
       <div class="grid two" style="margin-top:13px">
         <article class="card"><div class="kicker">Web runtime</div><h3>Production entry point</h3><p><code>web_app.py</code> exports the Flask WSGI application; Render applies <code>flask db upgrade</code> before starting Gunicorn.</p></article>
-        <article class="card"><div class="kicker">Local runtime</div><h3>Desktop entry point</h3><p><code>run_attendance.py</code> launches the local PyQt app with Add new student and Take attendance actions. Recognition stores one daily row per student in the matching class worksheet in <code>Attendance_records/DD-MM-YYYY.xlsx</code>.</p></article>
+        <article class="card"><div class="kicker">Web runtime</div><h3>Render entry point</h3><p>Render applies database migrations and starts the Flask WSGI app with Gunicorn using the dynamic <code>PORT</code>.</p></article>
       </div>
     </section>
 
     <section id="deployment">
-      <div class="section-head"><div><div class="eyebrow">05 / Runtime boundary</div><h2>Deployment & data architecture</h2><p class="section-sub">The browser uses its own camera after explicit permission. Frames travel to the Flask service for in-memory processing; persistent application data lives in the attached Render PostgreSQL database.</p></div></div>
+      <div class="section-head"><div><div class="eyebrow">05 / Runtime boundary</div><h2>Deployment & data architecture</h2><p class="section-sub">The browser uses its own camera after explicit permission. Frames travel to the Flask service for in-memory processing; persistent application data lives in Supabase PostgreSQL.</p></div></div>
       <div class="diagram-wrap">
         <svg class="architecture" viewBox="0 0 1000 290" role="img" aria-labelledby="deploy-title deploy-desc">
           <title id="deploy-title">Render web application data flow</title><desc id="deploy-desc">An administrator uses a web browser, which sends camera frames over HTTPS to a Render-hosted Flask service. The service processes frames in memory, persists descriptors and attendance in PostgreSQL, and returns Excel downloads.</desc>
@@ -407,18 +407,18 @@
           <rect class="node node-blue" x="350" y="90" width="245" height="108"></rect><text x="373" y="124" class="label">Flask + Gunicorn</text><text x="373" y="149" class="small">CSRF-protected web app</text><text x="373" y="172" class="small">transient OpenCV processing</text>
           <path d="M230 144 H343" class="arrow" marker-end="url(#arrow2)"></path>
           <rect class="node node-mint" x="735" y="55" width="190" height="55"></rect><text x="756" y="80" class="label">Browser camera</text><text x="756" y="99" class="small">JPEG frame over HTTPS</text>
-          <rect class="node node-violet" x="735" y="128" width="190" height="55"></rect><text x="756" y="153" class="label">Render PostgreSQL</text><text x="756" y="172" class="small">descriptors + attendance</text>
+          <rect class="node node-violet" x="735" y="128" width="190" height="55"></rect><text x="756" y="153" class="label">Supabase PostgreSQL</text><text x="756" y="172" class="small">descriptors + attendance</text>
           <rect class="node node-amber" x="735" y="201" width="190" height="48"></rect><text x="756" y="222" class="label">Excel report</text><text x="756" y="240" class="small">downloaded to browser</text>
           <path d="M595 112 H675 V82 H729" class="arrow" marker-end="url(#arrow2)"></path>
           <path d="M595 144 H729" class="arrow" marker-end="url(#arrow2)"></path>
           <path d="M595 174 H675 V224 H729" class="arrow" marker-end="url(#arrow2)"></path>
-          <text x="42" y="228" class="small">Legacy PyQt desktop workflow and its SQLite database remain separate.</text>
+          <text x="42" y="228" class="small">Render hosts the web application; Supabase provides the external PostgreSQL database.</text>
         </svg>
       </div>
       <div class="grid three" style="margin-top:13px">
         <article class="card"><div class="kicker">Deployment</div><h3>Render Blueprint</h3><p>Connect this repository as a Blueprint. Render reads <code>render.yaml</code>, installs <code>requirements.txt</code>, sets <code>PORT</code>, and starts Gunicorn after applying migrations.</p></article>
-        <article class="card"><div class="kicker">Database</div><h3>Render PostgreSQL</h3><p><code>DATABASE_URL</code> comes from the linked database. The current Blueprint selects the free plan, which is temporary; upgrade for long-term persistent records.</p></article>
-        <article class="card"><div class="kicker">Legacy desktop</div><h3>Independent local runtime</h3><p><code>python run_attendance.py</code> still launches the PyQt app. Its SQLite database and biometric records are intentionally not transferred to Render.</p></article>
+        <article class="card"><div class="kicker">Database</div><h3>Supabase PostgreSQL</h3><p>Set the Supabase Session pooler connection string as the Render service's secret <code>DATABASE_URL</code>. The Blueprint does not create a Render database.</p></article>
+        <article class="card"><div class="kicker">Live readiness</div><h3>Production operations</h3><p>Before using real attendance data, choose an appropriate Render web-service plan, configure Supabase backups, and add access and biometric-data safeguards appropriate to your organization.</p></article>
       </div>
     </section>
 
@@ -428,23 +428,18 @@
         <article class="card">
           <div class="kicker">Repository snapshot</div><h3>Application and deployment files</h3>
           <div class="tree">smartAttendanceSystem/
-├── attendance_system_with_blink.py   # legacy local desktop app
-├── run_attendance.py                 # local desktop launcher
 ├── ARCHITECTURE-CANVAS.html          # interactive architecture overview
 ├── web_app.py                        # Flask WSGI entry point
 ├── webapp/                           # routes, models, transient vision processing
 ├── render.yaml                       # Render Blueprint
 ├── requirements.txt                  # web app dependencies
-├── requirements-desktop.txt          # local PyQt/OpenCV dependencies
-├── face_models.py                    # YuNet/SFace CPU inference helpers
-├── download_face_models.py           # checksummed OpenCV Zoo setup
 ├── migrations/                       # Alembic database migrations
-├── templates/                        # authenticated web pages
-├── static/                            # web UI and camera scripts
+├── webapp/templates/                 # authenticated web pages
+├── webapp/static/                    # web UI and camera scripts
 ├── tests/                             # web application tests
 ├── .env.example                      # environment variable template
 └── .gitignore                         # excludes local secrets, data, and environments</div>
-          <p class="small-note">Local SQLite data, debug logs, credentials, and Python environments are excluded from source control. Render deploys the web app and stores hosted records in its separate PostgreSQL database.</p>
+          <p class="small-note">Secrets, local databases, debug logs, and Python environments are excluded from source control. Render deploys the web app; Supabase stores hosted records in PostgreSQL.</p>
         </article>
         <article class="card">
           <div class="kicker">Suggested exploration route</div><h3>Understand the system in this order</h3>
@@ -452,7 +447,7 @@
             <li>Start with <code>web_app.py</code> and the Flask factory in <code>webapp/__init__.py</code>.</li>
             <li>Review session and CSRF behavior, then page/API routes in <code>webapp/routes.py</code>.</li>
             <li>Inspect SQLAlchemy models and the initial Alembic migration.</li>
-            <li>Follow camera capture from <code>static/camera.js</code> to the transient vision helpers.</li>
+            <li>Follow camera capture from <code>webapp/static/camera.js</code> to the transient vision helpers.</li>
             <li>Review the page templates and responsive styles.</li>
             <li>Use <code>render.yaml</code> and <code>README.md</code> for deployment configuration.</li>
           </ul>
