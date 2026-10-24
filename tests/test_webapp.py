@@ -193,6 +193,43 @@ class WebApplicationTests(unittest.TestCase):
                     "SQLALCHEMY_DATABASE_URI": "sqlite://",
                 })
 
+    def test_supabase_postgres_url_uses_psycopg_driver(self):
+        supabase_url = (
+            "postgresql://postgres.project-ref:db-password@"
+            "aws-0-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require"
+        )
+        with patch("webapp.load_dotenv"), patch.dict(
+            os.environ,
+            {
+                "DATABASE_URL": supabase_url,
+                "SECRET_KEY": "test-secret",
+                "WEB_ADMIN_USERNAME": "admin",
+                "WEB_ADMIN_PASSWORD": "test-password",
+            },
+        ):
+            app = create_app()
+
+        self.assertEqual(
+            app.config["SQLALCHEMY_DATABASE_URI"],
+            supabase_url.replace("postgresql://", "postgresql+psycopg://", 1),
+        )
+
+    def test_example_supabase_url_fails_with_configuration_error(self):
+        with patch("webapp.load_dotenv"), patch.dict(
+            os.environ,
+            {
+                "DATABASE_URL": (
+                    "postgresql://postgres.<project-ref>:<password>"
+                    "@<pooler-host>:5432/postgres?sslmode=require"
+                ),
+                "SECRET_KEY": "test-secret",
+                "WEB_ADMIN_USERNAME": "admin",
+                "WEB_ADMIN_PASSWORD": "test-password",
+            },
+        ):
+            with self.assertRaisesRegex(RuntimeError, "example placeholders"):
+                create_app()
+
     def test_configured_descriptor_backend_is_pixel_fallback(self):
         self.assertEqual(descriptor_backend(), "pixel_fallback")
 

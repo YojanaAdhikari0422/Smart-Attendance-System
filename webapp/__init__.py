@@ -18,13 +18,14 @@ csrf = CSRFProtect()
 
 def create_app(test_config=None):
     project_root = Path(__file__).resolve().parent.parent
+    package_directory = Path(__file__).resolve().parent
     load_dotenv(project_root / ".env")
 
     app = Flask(
         __name__,
         instance_relative_config=True,
-        template_folder=str(project_root / "templates"),
-        static_folder=str(project_root / "static"),
+        template_folder=str(package_directory / "templates"),
+        static_folder=str(package_directory / "static"),
     )
     database_url = os.environ.get("DATABASE_URL")
     if database_url and database_url.startswith(("postgres://", "postgresql://")):
@@ -49,10 +50,26 @@ def create_app(test_config=None):
     if test_config:
         app.config.update(test_config)
 
+    database_url = app.config["SQLALCHEMY_DATABASE_URI"]
+    if any(
+        placeholder in database_url
+        for placeholder in ("<project-ref>", "<password>", "<pooler-host>", "[YOUR-PASSWORD]")
+    ):
+        raise RuntimeError(
+            "DATABASE_URL still contains example placeholders. "
+            "Copy the actual Session pooler URL from Supabase > Connect."
+        )
+
     if not app.config["SECRET_KEY"]:
-        raise RuntimeError("SECRET_KEY must be set to a strong, random value.")
+        raise RuntimeError(
+            "SECRET_KEY must be set to a strong, random value. "
+            "Copy .env.example to .env, generate a secret, and set SECRET_KEY."
+        )
     if not app.config["WEB_ADMIN_USERNAME"] or not app.config["WEB_ADMIN_PASSWORD"]:
-        raise RuntimeError("WEB_ADMIN_USERNAME and WEB_ADMIN_PASSWORD must be configured.")
+        raise RuntimeError(
+            "WEB_ADMIN_USERNAME and WEB_ADMIN_PASSWORD must be configured "
+            "in .env or the service environment."
+        )
 
     os.makedirs(app.instance_path, exist_ok=True)
     db.init_app(app)

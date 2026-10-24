@@ -20,7 +20,7 @@ htmlcov/
 .env.*
 !.env.example
 
-# Local biometric and attendance data
+# Local and legacy biometric data
 Attendance_records/
 /models/
 *.db
